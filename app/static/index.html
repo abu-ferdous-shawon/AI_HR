@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HR Assistant</title>
+<style>
+  :root {
+    --bg:#eef0f4; --panel:#ffffff; --text:#1d2330; --muted:#6b7385; --line:#e3e6ec;
+    --accent:#2f5bea; --accent-text:#ffffff; --user:#2f5bea; --bot:#eef0f5;
+    --err-bg:#fdecec; --err:#a32020;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#0e1015; --panel:#1a1d26; --text:#e8eaf0; --muted:#98a0b3; --line:#2a2f3c;
+      --accent:#6c8cff; --accent-text:#0e1220; --user:#3a58c9; --bot:#252a38;
+      --err-bg:#3a1c1c; --err:#ff9a9a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans Bengali", "Nirmala UI", sans-serif;
+    font-size: 16px; line-height: 1.5;
+  }
+  .app {
+    max-width: 820px; height: 100dvh; margin: 0 auto;
+    display: flex; flex-direction: column; background: var(--panel);
+    border-left: 1px solid var(--line); border-right: 1px solid var(--line);
+  }
+  header {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 12px 16px; border-bottom: 1px solid var(--line);
+  }
+  header h1 { font-size: 18px; margin: 0; }
+  .spacer { flex: 1; }
+  .badge { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: #f5a623; color: #1d1d1d; }
+  label { font-size: 14px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  select, input, textarea, button { font: inherit; color: var(--text); }
+  select, input[type=password] { padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  button { padding: 7px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); cursor: pointer; }
+  button:hover { background: var(--bot); }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button.primary:hover { filter: brightness(1.08); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  [hidden] { display: none !important; }
+
+  #signin { padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--bot); }
+  #signin p { margin: 0 0 8px; font-size: 14px; color: var(--muted); }
+  #signin .row { display: flex; gap: 8px; }
+  #signin input { flex: 1; min-width: 0; }
+
+  #messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+  #hint { margin: auto; text-align: center; color: var(--muted); max-width: 420px; }
+  .msg { max-width: 82%; padding: 10px 14px; border-radius: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg.user { align-self: flex-end; background: var(--user); color: #fff; border-bottom-right-radius: 4px; }
+  .msg.bot { align-self: flex-start; background: var(--bot); border-bottom-left-radius: 4px; }
+  .msg.typing { color: var(--muted); font-style: italic; }
+  .msg.error { align-self: center; background: var(--err-bg); color: var(--err); font-size: 14px; max-width: 92%; }
+  .msg img { display: block; max-width: 180px; max-height: 140px; border-radius: 10px; margin-bottom: 6px; }
+  .msg.bot img { max-width: 260px; max-height: 260px; margin: 8px 0 2px; }
+  .caption { font-size: 13px; color: var(--muted); }
+  .files { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+  .files button { background: var(--panel); }
+
+  #thumbs { display: flex; gap: 8px; padding: 8px 16px 0; flex-wrap: wrap; }
+  .thumb { position: relative; }
+  .thumb img { height: 56px; border-radius: 8px; border: 1px solid var(--line); display: block; }
+  .thumb button { position: absolute; top: -8px; right: -8px; padding: 0; width: 20px; height: 20px; border-radius: 50%; line-height: 1; font-size: 12px; }
+
+  .composer { display: flex; gap: 8px; align-items: flex-end; padding: 12px 16px; border-top: 1px solid var(--line); }
+  textarea { flex: 1; resize: none; max-height: 140px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+  textarea:focus, select:focus, input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
+  .composer button { padding: 10px 14px; border-radius: 12px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>HR Assistant</h1>
+    <span class="badge" id="devbadge" hidden title="Testing mode: you can chat as any employee">DEV</span>
+    <div class="spacer"></div>
+    <label id="whoWrap" hidden>Chat as <select id="who"></select></label>
+    <button id="signout" hidden>Sign out</button>
+    <button id="newchat">New chat</button>
+  </header>
+
+  <section id="signin" hidden>
+    <p>Paste your Frappe API token to sign in. It is kept only in this browser tab.</p>
+    <div class="row">
+      <input id="token" type="password" placeholder="token api_key:api_secret" autocomplete="off">
+      <button class="primary" id="signinBtn">Sign in</button>
+    </div>
+  </section>
+
+  <main id="messages">
+    <div id="hint">Ask about your leave, attendance, holidays, salary slips, your profile or
+      company HR policy, in English or বাংলায় or Banglish. Ask for a report to get an Excel file,
+      or attach an image with the 📎 button.</div>
+  </main>
+
+  <div id="thumbs" hidden></div>
+  <div class="composer">
+    <button id="attach" title="Attach images (max 3)">📎</button>
+    <input type="file" id="file" accept="image/*" multiple hidden>
+    <textarea id="input" rows="1" maxlength="1000"
+      placeholder="Type your question… (Enter to send, Shift+Enter for a new line)"></textarea>
+    <button class="primary" id="send">Send</button>
+  </div>
+</div>
+
+<script>
+  const $ = (id) => document.getElementById(id);
+  const msgs = $('messages'), hint = $('hint'), input = $('input'), sendBtn = $('send');
+  const MAX_IMAGES = 3;
+  let convId = null, busy = false, devMode = false, pending = [];
+
+  function addMsg(kind, text, images) {
+    hint.hidden = true;
+    const div = document.createElement('div');
+    div.className = 'msg ' + kind;
+    for (const im of images || []) {
+      const img = document.createElement('img');
+      img.src = im.preview; img.alt = 'attached image';
+      div.appendChild(img);
+    }
+    div.appendChild(document.createTextNode(text));   // text only, never HTML
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+    return div;
+  }
+
+  function addFiles(div, files) {
+    const box = document.createElement('div');
+    box.className = 'files';
+    for (const f of files) {
+      const b = document.createElement('button');
+      b.textContent = '⬇ ' + f.name;
+      b.addEventListener('click', () => download(f));
+      box.appendChild(b);
+    }
+    div.appendChild(box);
+  }
+
+  async function download(f) {
+    try {
+      const res = await fetch('/reports/' + encodeURIComponent(f.id), { headers: authHeaders() });
+      if (!res.ok) { addMsg('error', 'This report is no longer available. Please ask for it again.'); return; }
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement('a');
+      a.href = url; a.download = f.name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (e) { addMsg('error', 'Could not download the report.'); }
+  }
+
+  async function showPictures(div, pictures) {
+    for (const p of pictures) {
+      try {
+        const res = await fetch('/pictures/' + encodeURIComponent(p.id), { headers: authHeaders() });
+        if (!res.ok) throw new Error('not available');
+        const img = document.createElement('img');
+        img.src = URL.createObjectURL(await res.blob());
+        img.alt = p.caption || 'picture';
+        div.appendChild(img);
+        if (p.caption) {
+          const cap = document.createElement('div');
+          cap.className = 'caption';
+          cap.textContent = p.caption;            // text only, never HTML
+          div.appendChild(cap);
+        }
+      } catch (e) {
+        div.appendChild(document.createTextNode('\n(The picture could not be loaded.)'));
+      }
+    }
+    msgs.scrollTop = msgs.scrollHeight;
+  }
+
+  function resetChat() {
+    convId = null; pending = []; renderThumbs();
+    msgs.replaceChildren(hint);
+    hint.hidden = false;
+    input.focus();
+  }
+
+  function token() { return sessionStorage.getItem('hr_token'); }
+  function authHeaders() {
+    if (devMode) return { 'X-Dev-Employee': $('who').value };
+    return token() ? { 'Authorization': token() } : {};
+  }
+
+  function refreshUi() {
+    $('devbadge').hidden = !devMode;
+    $('whoWrap').hidden = !devMode;
+    $('signin').hidden = devMode || !!token();
+    $('signout').hidden = devMode || !token();
+  }
+
+  function setBusy(on) {
+    busy = on; sendBtn.disabled = on; input.disabled = on; $('attach').disabled = on;
+    if (!on) input.focus();
+  }
+
+  function autosize() {
+    input.style.height = 'auto';
+    input.style.height = Math.min(input.scrollHeight, 140) + 'px';
+  }
+
+  // ---- images: shrink in the browser, then keep until sent ----
+  async function toJpeg(file) {
+    const url = URL.createObjectURL(file);
+    try {
+      const img = await new Promise((ok, bad) => {
+        const i = new Image(); i.onload = () => ok(i); i.onerror = () => bad(new Error('bad image')); i.src = url;
+      });
+      const scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+      const g = c.getContext('2d');
+      g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height);
+      g.drawImage(img, 0, 0, c.width, c.height);
+      const dataUrl = c.toDataURL('image/jpeg', 0.85);
+      return { mime_type: 'image/jpeg', data: dataUrl.split(',')[1], preview: dataUrl };
+    } finally { URL.revokeObjectURL(url); }
+  }
+
+  async function addImages(files) {
+    for (const f of files) {
+      if (pending.length >= MAX_IMAGES) { addMsg('error', 'You can attach up to ' + MAX_IMAGES + ' images.'); break; }
+      if (!f.type.startsWith('image/')) continue;
+      try { pending.push(await toJpeg(f)); }
+      catch (e) { addMsg('error', 'One image could not be read.'); }
+    }
+    renderThumbs();
+  }
+
+  function renderThumbs() {
+    const box = $('thumbs');
+    box.replaceChildren();
+    pending.forEach((im, idx) => {
+      const wrap = document.createElement('div'); wrap.className = 'thumb';
+      const img = document.createElement('img'); img.src = im.preview; img.alt = 'to send';
+      const x = document.createElement('button'); x.textContent = '✕'; x.title = 'Remove';
+      x.addEventListener('click', () => { pending.splice(idx, 1); renderThumbs(); });
+      wrap.append(img, x); box.appendChild(wrap);
+    });
+    box.hidden = pending.length === 0;
+  }
+
+  async function send() {
+    let text = input.value.trim();
+    if (!text && pending.length) text = 'Please look at the attached image.';
+    if (!text || busy) return;
+    if (!devMode && !token()) { refreshUi(); $('token').focus(); return; }
+
+    const sending = pending;
+    pending = []; renderThumbs();
+    setBusy(true);
+    addMsg('user', text, sending);
+    input.value = ''; autosize();
+    const typing = addMsg('bot typing', 'Thinking…');
+
+    try {
+      const res = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({
+          message: text, conversation_id: convId,
+          images: sending.map(i => ({ mime_type: i.mime_type, data: i.data })),
+        }),
+      });
+      let data = {};
+      try { data = await res.json(); } catch (e) {}
+      typing.remove();
+
+      if (res.ok) {
+        convId = data.conversation_id;
+        const div = addMsg('bot', data.answer);
+        if (data.files && data.files.length) addFiles(div, data.files);
+        if (data.pictures && data.pictures.length) showPictures(div, data.pictures);        
+      } else if (res.status === 401) {
+        sessionStorage.removeItem('hr_token');
+        refreshUi();
+        addMsg('error', 'Your sign-in is not valid. Please sign in again.');
+      } else if (res.status === 413) {
+        addMsg('error', 'An image is too large. Please try a smaller one.');
+      } else if (res.status === 422) {
+        addMsg('error', typeof data.detail === 'string' ? data.detail
+          : 'Your message or image could not be accepted.');
+      } else {
+        addMsg('error', typeof data.detail === 'string' ? data.detail : 'Something went wrong. Please try again.');
+      }
+    } catch (e) {
+      typing.remove();
+      addMsg('error', 'Cannot reach the server. Is it running?');
+    }
+    setBusy(false);
+  }
+
+  input.addEventListener('input', autosize);
+  input.addEventListener('keydown', (e) => {
+    // isComposing: do not send while a Bangla/IME word is still being composed
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+  });
+  input.addEventListener('paste', (e) => {
+    const files = [...(e.clipboardData?.files || [])].filter(f => f.type.startsWith('image/'));
+    if (files.length) { e.preventDefault(); addImages(files); }
+  });
+  sendBtn.addEventListener('click', send);
+  $('attach').addEventListener('click', () => $('file').click());
+  $('file').addEventListener('change', (e) => { addImages([...e.target.files]); e.target.value = ''; });
+  $('newchat').addEventListener('click', resetChat);
+
+  $('signinBtn').addEventListener('click', () => {
+    let t = $('token').value.trim();
+    if (!t) return;
+    if (!t.toLowerCase().startsWith('token ')) t = 'token ' + t;
+    sessionStorage.setItem('hr_token', t);
+    $('token').value = '';
+    refreshUi(); resetChat();
+  });
+  $('signout').addEventListener('click', () => {
+    sessionStorage.removeItem('hr_token');
+    refreshUi(); resetChat();
+  });
+  $('who').addEventListener('change', () => {
+    sessionStorage.setItem('hr_dev_emp', $('who').value);
+    resetChat();                       // a different person means a fresh conversation
+  });
+
+  async function init() {
+    try { devMode = !!(await (await fetch('/config')).json()).dev; } catch (e) {}
+    if (devMode) {
+      try {
+        const list = await (await fetch('/dev/employees')).json();
+        for (const e of list) {
+          const o = document.createElement('option');
+          o.value = e.id; o.textContent = e.id + ' — ' + e.name;
+          $('who').appendChild(o);
+        }
+        const saved = sessionStorage.getItem('hr_dev_emp');
+        if (saved) $('who').value = saved;
+      } catch (e) { addMsg('error', 'Could not load the employee list.'); }
+    }
+    refreshUi();
+    input.focus();
+  }
+  init();
+</script>
+</body>
+</html>

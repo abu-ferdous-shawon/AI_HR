@@ -1,0 +1,17 @@
+.venv/
+.env
+__pycache__/
+output.txt
+*.pyc
+.env.example
+pytest.ini
+probe.txt
+probe_meta.txt
+probe_calc.txt
+leave_probe.txt
+image_fields.txt
+fields.txt
+context_pack.txt
+policies
+profiles
+.vscode
