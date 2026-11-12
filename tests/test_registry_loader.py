@@ -199,4 +199,3 @@ def test_loading_does_not_change_the_input():
     before = copy.deepcopy(data)
     build_profile(data)
     assert data == before
-    

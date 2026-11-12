@@ -29,9 +29,12 @@ class Settings(BaseSettings):
 
     # Registry profile: a name in app/registry/profiles/ or a file path.
     registry_profile: str = "frappe_hrms_v16"
-    hr_admin_employees: str = ""
-    hr_admin_roles: str = "HR Manager"
 
+    # How long a person's resolved roles are remembered (0 = ask every time).
+    role_cache_seconds: int = 60
+    # Employee IDs (comma separated) who always count as HR, whatever their roles.
+    # HR role names themselves are set in the registry profile (access.hr_roles).
+    hr_admin_employees: str = ""
 
 
 # One shared copy that the rest of the code imports.

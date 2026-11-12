@@ -233,6 +233,7 @@ class EmployeeConfig(Strict):
     status_field: str = "status"
     active_value: str = "Active"
     department_field: str = "department"
+    designation_field: str = "designation"
 
     @field_validator("doctype")
     @classmethod
@@ -242,7 +243,7 @@ class EmployeeConfig(Strict):
         return v
 
     @field_validator("name_field", "user_field", "reports_to_field",
-                     "status_field", "department_field")
+                     "status_field", "department_field", "designation_field")
     @classmethod
     def _name(cls, v, info):
         if not NAME_RE.match(v):
@@ -250,8 +251,64 @@ class EmployeeConfig(Strict):
         return v
 
 
+METHOD_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)+$")
+
+
+class RoleRule(Strict):
+    """Fallback: give a role to anyone matching ANY of these lists (used when the ERP cannot tell)."""
+    role: str = Field(min_length=1, max_length=60)
+    employees: list[str] = Field(default_factory=list)
+    users: list[str] = Field(default_factory=list)
+    designations: list[str] = Field(default_factory=list)
+    departments: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _has_a_matcher(self):
+        if not (self.employees or self.users or self.designations or self.departments):
+            raise ValueError(f"role rule for '{self.role}' matches nobody: list at least one "
+                             "of employees, users, designations or departments")
+        return self
+
+
 class AccessConfig(Strict):
     hr_roles: list[str] = Field(default_factory=lambda: ["HR Manager", "HR User"])
+    manager_roles: list[str] = Field(default_factory=list)   # empty = anyone with direct reports
+    user_doctype: str = "User"
+    user_roles_field: str = "roles"
+    role_name_field: str = "role"
+    role_method_param: str = "uid"
+    role_methods: list[str] = Field(default_factory=list)    # whitelisted methods that return a person's roles
+    role_map: list[RoleRule] = Field(default_factory=list)
+
+    @field_validator("hr_roles", "manager_roles")
+    @classmethod
+    def _role_names(cls, v):
+        if any(not r.strip() or len(r) > 60 for r in v):
+            raise ValueError("role names must be 1 to 60 characters")
+        return v
+
+    @field_validator("user_doctype")
+    @classmethod
+    def _doctype(cls, v):
+        if not DOCTYPE_RE.match(v):
+            raise ValueError("doctype contains unsafe characters")
+        return v
+
+    @field_validator("user_roles_field", "role_name_field", "role_method_param")
+    @classmethod
+    def _field_name(cls, v, info):
+        if not NAME_RE.match(v):
+            raise ValueError(f"unsafe field name in {info.field_name}")
+        return v
+
+    @field_validator("role_methods")
+    @classmethod
+    def _methods(cls, v):
+        bad = [m for m in v if not METHOD_RE.match(m)]
+        if bad:
+            raise ValueError("role_methods must be dotted Python paths such as "
+                             f"pkg.module.function: {', '.join(bad)}")
+        return v
 
 
 class Limits(Strict):

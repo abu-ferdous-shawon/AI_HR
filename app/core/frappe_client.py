@@ -3,11 +3,11 @@ from functools import lru_cache
 from typing import Any
 from urllib.parse import quote, unquote, urlparse
 
-from app.core.media import sniff_image
-
 import requests
 
 from app.config import settings
+from app.core.credentials import Credentials, current_holder
+from app.core.media import sniff_image
 
 # Safety cap: no single request may pull more than this many records.
 MAX_LIMIT = 200
@@ -24,33 +24,44 @@ class FrappeError(Exception):
 
 
 class FrappeClient:
-    """Small helper for Frappe's REST API. It knows nothing about HR."""
+    """Small helper for Frappe's REST API. It knows nothing about HR.
+
+    With credentials it acts as that person, so the ERP applies their roles and
+    permissions. Without them it uses the integration account's API key.
+    """
 
     def __init__(self, base_url: str | None = None,
                  api_key: str | None = None,
                  api_secret: str | None = None,
-                 timeout: int = 30):
+                 timeout: int = 30,
+                 credentials: Credentials | None = None):
         self.base_url = (base_url or settings.frappe_url).rstrip("/")
-        key = api_key or settings.frappe_api_key.get_secret_value()
-        secret = api_secret or settings.frappe_api_secret.get_secret_value()
         self.timeout = timeout
+        self.acts_as_user = credentials is not None
 
         # A Session reuses the connection and sends the same headers each time.
         self.session = requests.Session()
-        self.session.headers.update({
-            "Authorization": f"token {key}:{secret}",
-            "Accept": "application/json",
-        })
+        self.session.headers["Accept"] = "application/json"
+        if credentials is not None:
+            self.session.headers.update(credentials.headers())
+        else:
+            key = api_key or settings.frappe_api_key.get_secret_value()
+            secret = api_secret or settings.frappe_api_secret.get_secret_value()
+            self.session.headers["Authorization"] = f"token {key}:{secret}"
 
     # ---------- internal helpers ----------
 
     def _get(self, path: str, params: dict | None = None) -> dict:
         url = self.base_url + path
         try:
-            response = self.session.get(url, params=params, timeout=self.timeout)
+            response = self.session.get(url, params=params, timeout=self.timeout,
+                                        allow_redirects=False)
         except requests.RequestException as exc:
             raise FrappeError(0, f"could not reach Frappe: {exc}") from exc
 
+        if 300 <= response.status_code < 400:   # usually the login page: the session ended
+            raise FrappeError(401, "the HR system redirected the request "
+                                   "(the login may have expired)")
         if response.status_code >= 400:
             raise FrappeError(response.status_code, self._error_text(response))
 
@@ -101,7 +112,6 @@ class FrappeClient:
                 break
         return rows[:max_rows]
 
-    
     def get_doc(self, doctype: str, name: str) -> dict[str, Any]:
         """Fetch one full record by its ID, e.g. get_doc('Employee', 'HR-EMP-00001')."""
         path = f"/api/resource/{quote(doctype)}/{quote(name, safe='')}"
@@ -110,7 +120,7 @@ class FrappeClient:
     def call_method(self, method_path: str, params: dict | None = None) -> Any:
         """Call a whitelisted Frappe function, e.g. frappe.auth.get_logged_user."""
         return self._get(f"/api/method/{method_path}", params).get("message")
-    
+
     @staticmethod
     def _safe_file_path(file_url: str) -> str:
         """Accept only a file path on THIS Frappe server (/files/... or /private/files/...)."""
@@ -155,6 +165,25 @@ class FrappeClient:
 
 
 @lru_cache
-def get_frappe_client() -> FrappeClient:
-    """Build the client once and reuse it everywhere."""
+def get_service_client() -> FrappeClient:
+    """The integration account's client (API key).
+
+    Used for lookups that are about structure, not a person's data: which employee
+    a login belongs to, who reports to whom, which roles someone holds.
+    """
     return FrappeClient()
+
+
+def get_frappe_client() -> FrappeClient:
+    """The client for reading a person's data.
+
+    Inside a request that runs as the logged-in user (see use_credentials) this is a
+    client with THEIR login, so the ERP applies their roles and permissions. Anywhere
+    else, such as scripts and tests, it is the service client.
+    """
+    holder = current_holder()
+    if holder is None:
+        return get_service_client()
+    if holder.client is None:
+        holder.client = FrappeClient(credentials=holder.credentials)
+    return holder.client

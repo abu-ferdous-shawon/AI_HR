@@ -82,38 +82,15 @@ def test_the_model_sees_no_amounts(as_hr):
         assert secret not in seen
     assert "IT" in seen and "claims_counted" in seen      # counts and names stay readable
 
-
-class RolesFrappe:
-    def __init__(self, roles):
-        self.roles = roles
-
-    def get_list(self, *args, **kwargs):
-        return [{"user_id": "someone@x.com"}]
-
-    def get_doc(self, doctype, name):
-        return {"roles": [{"role": r} for r in self.roles]}
-
-
 def test_hr_admin_by_allowlist(monkeypatch):
     monkeypatch.setattr(security.settings, "hr_admin_employees", "HR-EMP-00004, HR-EMP-00009")
     assert security.is_hr_admin(UserContext("x", "HR-EMP-00009")) is True
+    assert security.is_hr_admin(UserContext("x", "HR-EMP-00001")) is False
 
 
 def test_hr_admin_by_role(monkeypatch):
     monkeypatch.setattr(security.settings, "hr_admin_employees", "")
-    monkeypatch.setattr(security.settings, "hr_admin_roles", "HR Manager")
-    monkeypatch.setattr(security, "get_frappe_client", lambda: RolesFrappe(["Employee", "HR Manager"]))
-    assert security.is_hr_admin(STAFF) is True
-    monkeypatch.setattr(security, "get_frappe_client", lambda: RolesFrappe(["Employee"]))
-    assert security.is_hr_admin(STAFF) is False
-
-
-def test_unreadable_roles_fail_closed(monkeypatch):
-    class Denied(RolesFrappe):
-        def get_doc(self, doctype, name):
-            raise FrappeError(403, "no")
-
-    monkeypatch.setattr(security.settings, "hr_admin_employees", "")
-    monkeypatch.setattr(security.settings, "hr_admin_roles", "HR Manager")
-    monkeypatch.setattr(security, "get_frappe_client", lambda: Denied([]))
-    assert security.is_hr_admin(STAFF) is False
+    assert security.is_hr_admin(UserContext("x", "E1", ("Employee", "HR Manager"))) is True
+    assert security.is_hr_admin(UserContext("x", "E1", ("hr user",))) is True
+    assert security.is_hr_admin(UserContext("x", "E1", ("Employee",))) is False
+    assert security.is_hr_admin(UserContext("x", "E1")) is False      # roles unknown: no access

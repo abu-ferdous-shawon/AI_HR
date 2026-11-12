@@ -43,12 +43,19 @@ TYPED_SECRET_RE = re.compile(
 )
 
 
+# Names added at run time from the registry profile (see register_confidential).
+EXTRA_CONFIDENTIAL: set[str] = set()
+
+
+def register_confidential(names) -> None:
+    """Treat these field names as confidential too (called with a profile's names)."""
+    EXTRA_CONFIDENTIAL.update(str(n).lower() for n in names)
+
+
 def is_confidential(field_name: str) -> bool:
     name = str(field_name).lower()
-    return name in CONFIDENTIAL_FIELDS or any(
-        word in CONFIDENTIAL_WORDS for word in name.split("_")
-    )
-
+    return (name in CONFIDENTIAL_FIELDS or name in EXTRA_CONFIDENTIAL
+            or any(word in CONFIDENTIAL_WORDS for word in name.split("_")))
 
 def format_number(value) -> str:
     """Plain text for a calculated number: 45000.0 -> '45000', 12.5 -> '12.5'."""

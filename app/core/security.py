@@ -1,12 +1,13 @@
-import logging
 from dataclasses import dataclass
 from typing import Any
 
 from app.config import settings
-from app.core.frappe_client import FrappeError, get_frappe_client
+from app.core.credentials import Credentials
+from app.core.frappe_client import get_service_client
 from app.core.masking import is_confidential
-
-log = logging.getLogger("hr_ai.security")
+from app.core.roles import resolve_roles
+from app.registry import Profile, get_profile
+from app.registry.models import norm
 
 
 class AccessDenied(Exception):
@@ -20,30 +21,40 @@ class ToolInputError(Exception):
 @dataclass(frozen=True)
 class UserContext:
     """Who is asking. Built by our code, never from the chat text."""
-    user_id: str      # the Frappe login, e.g. an email
-    employee_id: str  # the Employee record linked to that login
+    user_id: str                       # the ERP login, e.g. an email
+    employee_id: str                   # the employee record linked to that login
+    roles: tuple[str, ...] = ()        # the person's roles; empty = unknown, so no special access
+    role_source: str = ""              # how the roles were found: session, key, mapping or none
 
 
-def resolve_context(user_id: str) -> UserContext:
-    """Turn a logged-in user into their one Employee record, or refuse."""
-    rows = get_frappe_client().get_list(
-        "Employee",
-        ["name"],
-        filters={"user_id": user_id, "status": "Active"},
+def build_context(user_id: str, employee_id: str,
+                  credentials: Credentials | None = None) -> UserContext:
+    """A context for a known employee, with their roles looked up."""
+    found = resolve_roles(employee_id, credentials)
+    return UserContext(user_id=user_id, employee_id=employee_id,
+                       roles=found.roles, role_source=found.source)
+
+
+def resolve_context(user_id: str, credentials: Credentials | None = None) -> UserContext:
+    """Turn a logged-in user into their one employee record and roles, or refuse."""
+    cfg = get_profile().employee
+    rows = get_service_client().get_list(
+        cfg.doctype, ["name"],
+        filters={cfg.user_field: user_id, cfg.status_field: cfg.active_value},
         limit=2,
     )
     # Exactly one match is required. Zero or several are both unsafe.
     if len(rows) != 1:
         raise AccessDenied("No active employee record is linked to this login.")
-    return UserContext(user_id=user_id, employee_id=rows[0]["name"])
+    return build_context(user_id, rows[0]["name"], credentials)
 
 
 def get_team(ctx: UserContext) -> list[dict]:
     """Active employees who report directly to this person."""
-    return get_frappe_client().get_list(
-        "Employee",
-        ["name", "employee_name"],
-        filters={"reports_to": ctx.employee_id, "status": "Active"},
+    cfg = get_profile().employee
+    return get_service_client().get_list(
+        cfg.doctype, ["name", cfg.name_field],
+        filters={cfg.reports_to_field: ctx.employee_id, cfg.status_field: cfg.active_value},
         limit=200,
     )
 
@@ -62,28 +73,27 @@ def require_access(ctx: UserContext, employee_id: str | None) -> str:
     )
 
 
-def is_hr_admin(ctx: UserContext) -> bool:
-    """True for people who may see company-wide figures (HR managers)."""
-    listed = {e.strip() for e in settings.hr_admin_employees.split(",") if e.strip()}
-    if ctx.employee_id in listed:
-        return True
-    wanted = {r.strip() for r in settings.hr_admin_roles.split(",") if r.strip()}
-    if not wanted:
-        return False
+def has_role(ctx: UserContext, names) -> bool:
+    """True if the person holds any of these roles (compared without case)."""
+    wanted = {norm(n) for n in names}
+    return any(norm(r) in wanted for r in ctx.roles)
 
-    frappe = get_frappe_client()
-    rows = frappe.get_list("Employee", ["user_id"], filters={"name": ctx.employee_id}, limit=1)
-    login = rows[0].get("user_id") if rows else None
-    if not login:
-        return False
-    try:
-        user = frappe.get_doc("User", login)
-    except FrappeError as exc:
-        # Fail closed: if we cannot read the roles, nobody gets in this way.
-        log.warning("Could not read the roles of %s (%s). Add the person to "
-                    "HR_ADMIN_EMPLOYEES instead.", login, exc)
-        return False
-    return bool(wanted & {r.get("role") for r in user.get("roles") or []})
+
+def require_role(ctx: UserContext, *names: str, message: str | None = None) -> None:
+    """Refuse unless the person holds one of these roles."""
+    if not has_role(ctx, names):
+        raise AccessDenied(message or "You do not have the role this needs.")
+
+
+def _listed(text: str) -> set[str]:
+    return {part.strip() for part in str(text).split(",") if part.strip()}
+
+
+def is_hr_admin(ctx: UserContext, profile: Profile | None = None) -> bool:
+    """HR: listed in HR_ADMIN_EMPLOYEES (an explicit grant) or holding an HR role."""
+    if ctx.employee_id in _listed(settings.hr_admin_employees):
+        return True
+    return has_role(ctx, (profile or get_profile()).access.hr_roles)
 
 
 def scrub(data: Any, allow: frozenset = frozenset()) -> Any:
