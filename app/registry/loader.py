@@ -7,6 +7,7 @@ import yaml
 from pydantic import ValidationError
 
 from app.config import settings
+from app.core.masking import register_confidential
 from app.registry.models import Profile
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -52,7 +53,9 @@ def _merge(base: dict, overlay: dict) -> dict:
     """Mappings merge key by key; lists and values in the overlay replace the base."""
     out = copy.deepcopy(base)
     for key, value in overlay.items():
-        if isinstance(value, dict) and isinstance(out.get(key), dict):
+        if value is None and isinstance(out.get(key), dict):
+            del out[key]                                  # null removes a whole entry
+        elif isinstance(value, dict) and isinstance(out.get(key), dict):
             out[key] = _merge(out[key], value)
         else:
             out[key] = copy.deepcopy(value)
@@ -98,8 +101,26 @@ def load_profile(ref: str) -> Profile:
 @lru_cache
 def get_profile() -> Profile:
     """The profile chosen by REGISTRY_PROFILE, loaded once."""
-    return load_profile(settings.registry_profile)
+    profile = load_profile(settings.registry_profile)
+    # Masking learns the profile's confidential field names here, so nothing depends on
+    # which tool module happened to be imported first.
+    register_confidential(profile.confidential_field_names())
+    return profile
 
 
 def clear_profile_cache() -> None:
     get_profile.cache_clear()
+
+
+
+def extends_reference(ref: str) -> str:
+    """How an overlay should point at a profile: a shipped name stays a name, a file becomes
+    an absolute path (so the overlay can live anywhere)."""
+    ref = str(ref).strip()
+    path = _resolve_path(ref)
+    return ref if path.parent == PROFILE_DIR else str(path)
+
+
+def load_with_overlay(base_ref: str, overlay: dict) -> Profile:
+    """The profile you get by laying an overlay (a dict without 'extends') over a base profile."""
+    return build_profile(_merge(_load_raw(base_ref), overlay))

@@ -20,8 +20,11 @@ from app.core.frappe_client import FrappeError, get_frappe_client
 from app.core.llm.base import ImageData, LLMBusy, LLMError, Message
 from app.core.masking import Vault
 from app.core.reports import get_report
-from app.core.security import AccessDenied, UserContext, resolve_context
+from app.core.credentials import Credentials, extract_credentials, use_credentials
+from app.core.security import AccessDenied, UserContext, build_context, resolve_context
 from app.core.media import get_picture
+from app.registry import get_profile
+from app.registry.review import masking_review
 from app.tools.registry import load_all_tools
 
 logging.basicConfig(level=logging.INFO,
@@ -32,12 +35,19 @@ log = logging.getLogger("hr_ai.api")
 
 load_all_tools()  # fail at startup, not in the middle of a chat
 
+for _problem in masking_review(get_profile()):
+    log.warning("Masking review: %s", _problem) # fail at startup, not in the middle of a chat
+
 app = FastAPI(title="HR AI Backend")
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 if settings.dev_mode:
     log.warning("DEV_MODE is ON: browsers on this machine can chat as any "
                 "active employee. Never use this on a shared server.")
+log.info("ERP access mode: %s", settings.frappe_auth_mode)
+if settings.dev_mode and settings.frappe_auth_mode == "user_session":
+    log.warning("Dev-mode requests have no login of their own, so they read data "
+                "with the service account.")
 
 # ---------- who is asking ----------
 
@@ -74,7 +84,7 @@ def current_user(request: Request,
             raise HTTPException(status_code=503, detail="The HR system is not reachable right now.")
         if not rows:
             raise HTTPException(status_code=403, detail="Unknown or inactive employee.")
-        return UserContext(user_id=f"dev:{rows[0]['name']}", employee_id=rows[0]["name"])
+        return build_context(f"dev:{rows[0]['name']}", rows[0]["name"])
 
     # The real path: ask Frappe who these credentials belong to.
     try:
@@ -85,12 +95,23 @@ def current_user(request: Request,
         log.warning("Login check failed: %s", exc)
         raise HTTPException(status_code=503, detail="The HR system is not reachable right now.")
     try:
-        return resolve_context(user_id)
+        return resolve_context(user_id, extract_credentials(authorization, cookie))
     except AccessDenied as exc:
         raise HTTPException(status_code=403, detail=str(exc))
     except FrappeError as exc:
         log.warning("Employee lookup failed: %s", exc)
         raise HTTPException(status_code=503, detail="The HR system is not reachable right now.")
+
+
+def request_credentials(authorization: str | None = Depends(api_key_header),
+                        cookie: str | None = Header(default=None)) -> Credentials | None:
+    """The caller's own ERP login, from the same headers the login check used."""
+    return extract_credentials(authorization, cookie)
+
+
+def _is_dev(ctx: UserContext) -> bool:
+    """Contexts built by the dev shortcut (localhost only) carry this prefix."""
+    return ctx.user_id.startswith("dev:")
 
 
 # ---------- conversation memory (in the server's RAM) ----------
@@ -213,7 +234,8 @@ def health():
 # A plain "def" (not async): FastAPI runs it in a worker thread, so one slow
 # model call does not freeze the other users' requests.
 @app.post("/chat", response_model=ChatResponse)
-def chat(body: ChatRequest, ctx: UserContext = Depends(current_user)):
+def chat(body: ChatRequest, ctx: UserContext = Depends(current_user),
+         creds: Credentials | None = Depends(request_credentials)):
     images = decode_images(body.images)
     cid = body.conversation_id or uuid.uuid4().hex
     key = (ctx.user_id, cid)  # tied to the user, so IDs cannot be borrowed
@@ -221,8 +243,15 @@ def chat(body: ChatRequest, ctx: UserContext = Depends(current_user)):
     with _lock:
         saved = _store.get(key)
     history, vault = (list(saved[0]), saved[1]) if saved else ([], None)
+    # user_session: the agent reads data as the logged-in person, so the ERP applies their
+    # own roles and permissions. A real login with no usable credentials is refused, never
+    # downgraded to the service account. service_account: the integration key is used.
+    if settings.frappe_auth_mode == "user_session" and creds is None and not _is_dev(ctx):
+        raise HTTPException(status_code=401, detail="Please sign in again.")
+    acting_as = creds if settings.frappe_auth_mode == "user_session" else None
     try:
-        result = run_agent(body.message, ctx, history=history, vault=vault, images=images)
+        with use_credentials(acting_as):
+            result = run_agent(body.message, ctx, history=history, vault=vault, images=images)
     except LLMBusy as exc:
         log.warning("LLM busy for %s: %s", ctx.user_id, exc)
         raise HTTPException(status_code=503,

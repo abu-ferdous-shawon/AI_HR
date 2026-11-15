@@ -1,3 +1,4 @@
+from typing import Literal
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -35,6 +36,12 @@ class Settings(BaseSettings):
     # Employee IDs (comma separated) who always count as HR, whatever their roles.
     # HR role names themselves are set in the registry profile (access.hr_roles).
     hr_admin_employees: str = ""
+
+    # How the ERP is called for a person's data:
+    #   user_session    as the logged-in person, so the ERP enforces their own roles,
+    #                   user permissions and field permissions (default)
+    #   service_account with the integration API key; only this app's rules apply
+    frappe_auth_mode: Literal["user_session", "service_account"] = "user_session"
 
 
 # One shared copy that the rest of the code imports.

@@ -170,3 +170,10 @@ def test_no_employee_or_several_employees_for_a_login_is_refused(monkeypatch, ro
     monkeypatch.setattr(security, "get_service_client", lambda: directory)
     with pytest.raises(AccessDenied, match="No active employee"):
         security.resolve_context("ann@x.com")
+
+def test_a_look_alike_name_is_not_treated_as_me(erp):
+    erp.employees = [{"name": "E1", "employee_name": "Ali Khan"}]
+    with pytest.raises(AccessDenied, match="only view your own"):
+        access(person(), employee="Ali")          # could be a different Ali
+    assert access(person(), employee="Ali Khan").employee_ids == ("E1",)
+    assert access(person(), employee="me").employee_ids == ("E1",)

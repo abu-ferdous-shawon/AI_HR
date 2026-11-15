@@ -8,7 +8,12 @@ _PROFILE = get_profile()                       # an invalid profile stops startu
 register_confidential(_PROFILE.confidential_field_names())
 
 _TYPES = list(_PROFILE.enabled_types())
-_CATALOG = "\n".join(f"- {key}: {rt.label}" for key, rt in _PROFILE.enabled_types().items())
+def _catalog_line(key, rt) -> str:
+    names = [*rt.aliases.bn[:1], *rt.aliases.banglish[:2]]
+    return f"- {key}: {rt.label}" + (f" ({', '.join(names)})" if names else "")
+
+
+_CATALOG = "\n".join(_catalog_line(key, rt) for key, rt in _PROFILE.enabled_types().items())
 _TOTALS = "\n".join(
     f"- {key}: {', '.join(n for n in rt.aggregations if n != 'count')}"
     for key, rt in _PROFILE.enabled_types().items() if len(rt.aggregations) > 1)

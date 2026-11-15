@@ -69,6 +69,7 @@ class World:
         self.error = self.doc_error = None
         self.team, self.hr = [], False
         self.all_calls, self.doc_calls = [], []
+        monkeypatch.setattr(engine, "get_frappe_client", lambda: self)
         monkeypatch.setattr(scope, "get_service_client", lambda: self)
         monkeypatch.setattr(scope, "get_team", lambda ctx: self.team)
         monkeypatch.setattr(scope, "is_hr_admin", lambda ctx, profile=None: self.hr)

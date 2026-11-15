@@ -199,3 +199,34 @@ def test_loading_does_not_change_the_input():
     before = copy.deepcopy(data)
     build_profile(data)
     assert data == before
+
+def test_null_removes_an_entry_instead_of_setting_it(tmp_path):
+    write(tmp_path / "base.yaml", BASE_YAML + """  other:
+    doctype: Other
+    label: Others
+    description: Another.
+    employee_field: employee
+    fields: [name, employee]
+    aliases: {en: [other]}
+""")
+    custom = write(tmp_path / "c.yaml",
+                   "extends: base.yaml\nname: c\nrecord_types:\n  other: null\n")
+    assert list(load_profile(custom).record_types) == ["thing"]
+
+
+def test_null_still_clears_a_plain_value(tmp_path):
+    write(tmp_path / "b.yaml", BASE_YAML.replace(
+        "fields: [name, employee, status]",
+        "fields: [name, employee, status, posting_date]\n    date_field: posting_date"))
+    custom = write(tmp_path / "c.yaml",
+                   "extends: b.yaml\nname: c\nrecord_types:\n  thing: {date_field: null}\n")
+    assert load_profile(custom).get("thing").date_field is None
+
+
+def test_extends_reference_and_overlay_loading(tmp_path):
+    assert loader.extends_reference("frappe_hrms_v16") == "frappe_hrms_v16"
+    path = write(tmp_path / "b.yaml", BASE_YAML)
+    assert loader.extends_reference(path) == str((tmp_path / "b.yaml").resolve())
+    merged = loader.load_with_overlay(
+        path, {"name": "n", "record_types": {"thing": {"label": "Stuff"}}})
+    assert merged.name == "n" and merged.get("thing").label == "Stuff"

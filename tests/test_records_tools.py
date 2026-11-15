@@ -74,3 +74,8 @@ def test_unknown_types_and_summaries_through_the_tools(world):
     res = run_tool("summarize_employee_records",
                    {"record_type": "leave", "aggregation": "total_days"}, ME)
     assert res["result"]["value"] == 3.5
+
+def test_the_record_list_shows_bangla_and_banglish_names():
+    text = spec("get_employee_records")["description"]
+    assert "employee_promotion: Promotions (পদোন্নতি, podonnoti)" in text
+    assert "salary_slip" in text and "hajira" in text

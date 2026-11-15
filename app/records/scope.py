@@ -34,6 +34,14 @@ def _same(text: str, emp_id: str, emp_name: str) -> bool:
     return wanted == norm(emp_id) or wanted in norm(emp_name)
 
 
+_ME_WORDS = {"me", "myself", "my", "i", "self", "own"}
+
+
+def _is_me(text: str, emp_id: str, emp_name: str) -> bool:
+    """Stricter than _same: in self scope only the person themselves, never a look-alike."""
+    wanted = norm(text)
+    return wanted in _ME_WORDS or wanted == norm(emp_id) or wanted == norm(emp_name)
+
 def _one(matches: list[dict], text: str) -> dict:
     if len(matches) == 1:
         return matches[0]
@@ -79,7 +87,7 @@ def resolve_access(ctx: UserContext, profile: Profile, rt: RecordType,
             own = get_service_client().get_list(
                 cfg.doctype, [cfg.name_field], filters={"name": ctx.employee_id}, limit=1)
             own_name = (own[0].get(cfg.name_field) or "").strip() if own else ""
-            if not _same(text, ctx.employee_id, own_name):
+            if not _is_me(text, ctx.employee_id, own_name):
                 raise AccessDenied("You can only view your own records here. For other people "
                                    "use scope 'team' (your direct reports) or 'company' (HR only).")
         return Access("self", (ctx.employee_id,), None)
