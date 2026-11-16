@@ -1,5 +1,7 @@
-from app.core.masking import Vault, is_confidential
+import pytest
 
+from app.core import masking
+from app.core.masking import Vault, is_confidential
 
 def test_confidential_and_ordinary_field_names():
     for name in ("cell_number", "personal_email", "date_of_birth", "bank_ac_no", "ctc",
@@ -56,3 +58,18 @@ def test_numbers_are_masked_and_restored_as_text():
     v = Vault()
     tok = v.mask({"ctc": 50000.0})["ctc"]
     assert tok.startswith("[[MASK_") and v.unmask(tok) == "50000.0"
+
+@pytest.mark.parametrize("name", [
+    "salary_component", "salary_structure", "earning_component",
+    "payroll_frequency", "payroll_date", "bonus_payment_date", "leave_without_pay",
+])
+def test_labels_and_dates_with_a_confidential_word_stay_readable(name):
+    assert not is_confidential(name)
+
+
+def test_a_profile_can_still_force_such_a_name_to_be_masked():
+    masking.register_confidential(["salary_component"])
+    try:
+        assert is_confidential("salary_component")
+    finally:
+        masking.EXTRA_CONFIDENTIAL.discard("salary_component")

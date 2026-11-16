@@ -1,8 +1,10 @@
 import base64
 import binascii
 import logging
+import time
 import uuid
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from pathlib import Path
 from threading import Lock
 from typing import Literal
@@ -19,25 +21,45 @@ from app.core.auth import identify_user
 from app.core.frappe_client import FrappeError, get_frappe_client
 from app.core.llm.base import ImageData, LLMBusy, LLMError, Message
 from app.core.masking import Vault
+from app.core import audit, gateway
+from app.core.hardening import OriginGuard, assert_safe_config, docs_settings, parse_origins
 from app.core.reports import get_report
-from app.core.security import AccessDenied, UserContext, resolve_context
+from app.core.credentials import Credentials, extract_credentials, use_credentials
+from app.core.security import AccessDenied, UserContext, build_context, resolve_context
 from app.core.media import get_picture
+from app.registry import get_profile
+from app.registry.review import masking_review
 from app.tools.registry import load_all_tools
 
-logging.basicConfig(level=logging.INFO,
-                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 for noisy in ("httpx", "httpcore", "urllib3", "google_genai"):
     logging.getLogger(noisy).setLevel(logging.WARNING)
 log = logging.getLogger("hr_ai.api")
 
-load_all_tools()  # fail at startup, not in the middle of a chat
+@asynccontextmanager
+async def lifespan(_app):
+    audit.setup_app_logging()
+    audit.configure()
+    load_all_tools()                      # a bad profile or tool stops startup here
+    for problem in masking_review(get_profile()):
+        log.warning("profile review: %s", problem)
+    yield
+    audit.close()
 
-app = FastAPI(title="HR AI Backend")
+
+_ORIGINS = parse_origins(settings.allowed_origins)
+assert_safe_config(settings.environment, settings.dev_mode, _ORIGINS)   # refuse unsafe start
+app = FastAPI(title="HR AI Backend", lifespan=lifespan, **docs_settings(settings.environment))
+gateway.install(app)
+app.add_middleware(OriginGuard, allowed=_ORIGINS)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 if settings.dev_mode:
     log.warning("DEV_MODE is ON: browsers on this machine can chat as any "
                 "active employee. Never use this on a shared server.")
+log.info("ERP access mode: %s", settings.frappe_auth_mode)
+if settings.dev_mode and settings.frappe_auth_mode == "user_session":
+    log.warning("Dev-mode requests have no login of their own, so they read data "
+                "with the service account.")
 
 # ---------- who is asking ----------
 
@@ -52,11 +74,24 @@ def _dev_active(request: Request) -> bool:
     if not settings.dev_mode:
         return False
     host = request.client.host if request.client else "unknown"
+    if gateway.is_proxied(request):      # behind a web server every caller looks local
+        log.warning("DEV_MODE is on, but the request came through a proxy, so it was refused.")
+        return False
     if host in ("127.0.0.1", "::1"):
         return True
     log.warning("DEV_MODE is on, but a request came from %s (not localhost), "
                 "so dev mode was refused.", host)
     return False
+
+def _auth_audit(request: Request, ip: str, status: int, reason: str) -> None:
+    audit.record("auth_failed", request_id=getattr(request.state, "request_id", "-"),
+                 ip=ip, status=status, reason=reason)   # never the credentials
+
+
+def _audit_download(request: Request, ctx: UserContext, kind: str, found: bool) -> None:
+    audit.record("download", request_id=getattr(request.state, "request_id", "-"),
+                 kind=kind, user=ctx.user_id, employee=ctx.employee_id,
+                 status="ok" if found else "not_found")
 
 
 def current_user(request: Request,
@@ -74,23 +109,52 @@ def current_user(request: Request,
             raise HTTPException(status_code=503, detail="The HR system is not reachable right now.")
         if not rows:
             raise HTTPException(status_code=403, detail="Unknown or inactive employee.")
-        return UserContext(user_id=f"dev:{rows[0]['name']}", employee_id=rows[0]["name"])
+        return build_context(f"dev:{rows[0]['name']}", rows[0]["name"])
 
     # The real path: ask Frappe who these credentials belong to.
+    # The real path: ask Frappe who these credentials belong to.
+    ip = gateway.client_ip(request) if request is not None else "unknown"
+    wait = gateway.auth_failures.blocked(ip)
+    if wait:
+        _auth_audit(request, ip, 429, "locked_out")
+        raise HTTPException(status_code=429, detail=gateway.wait_message(wait),
+                            headers={"Retry-After": str(wait)})
     try:
         user_id = identify_user(authorization, cookie)
     except AccessDenied as exc:
+        gateway.auth_failures.hit(ip)
+        _auth_audit(request, ip, 401, "bad_login")
         raise HTTPException(status_code=401, detail=str(exc))
     except FrappeError as exc:
         log.warning("Login check failed: %s", exc)
+        _auth_audit(request, ip, 503, "erp_unreachable")
         raise HTTPException(status_code=503, detail="The HR system is not reachable right now.")
+    creds = extract_credentials(authorization, cookie)
+    if creds is None and settings.frappe_auth_mode == "user_session":
+        gateway.auth_failures.hit(ip)          # a valid login we cannot forward: refuse, never downgrade
+        _auth_audit(request, ip, 401, "no_usable_credentials")
+        raise HTTPException(status_code=401, detail="Your sign-in is not valid.")
     try:
-        return resolve_context(user_id)
+        return resolve_context(user_id, creds)
     except AccessDenied as exc:
+        gateway.auth_failures.hit(ip)
+        _auth_audit(request, ip, 403, "no_employee")
         raise HTTPException(status_code=403, detail=str(exc))
     except FrappeError as exc:
         log.warning("Employee lookup failed: %s", exc)
+        _auth_audit(request, ip, 503, "erp_unreachable")
         raise HTTPException(status_code=503, detail="The HR system is not reachable right now.")
+
+
+def request_credentials(authorization: str | None = Depends(api_key_header),
+                        cookie: str | None = Header(default=None)) -> Credentials | None:
+    """The caller's own ERP login, from the same headers the login check used."""
+    return extract_credentials(authorization, cookie)
+
+
+def _is_dev(ctx: UserContext) -> bool:
+    """Contexts built by the dev shortcut (localhost only) carry this prefix."""
+    return ctx.user_id.startswith("dev:")
 
 
 # ---------- conversation memory (in the server's RAM) ----------
@@ -120,6 +184,13 @@ PAGE_HEADERS = {
 @app.get("/", include_in_schema=False)
 def home():
     return FileResponse(STATIC_DIR / "index.html", headers=PAGE_HEADERS)
+
+
+@app.get("/ai_chat.js", include_in_schema=False)
+def widget_script():
+    """The chat widget. Public on purpose: it holds no data and no secrets."""
+    return FileResponse(STATIC_DIR / "ai_chat.js", media_type="application/javascript",
+                        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-cache"})
 
 
 @app.get("/config", include_in_schema=False)
@@ -212,49 +283,90 @@ def health():
 
 # A plain "def" (not async): FastAPI runs it in a worker thread, so one slow
 # model call does not freeze the other users' requests.
+def _audit_chat(request: Request, ctx: UserContext, cid: str, body: ChatRequest,
+                image_count: int, status: str, started: float, result=None) -> None:
+    """One audit line per chat. The message text itself is never logged."""
+    audit.record(
+        "chat", request_id=getattr(request.state, "request_id", "-"),
+        ip=gateway.client_ip(request), user=ctx.user_id, employee=ctx.employee_id,
+        roles=list(ctx.roles), role_source=ctx.role_source, conversation=cid,
+        status=status, duration_ms=round((time.monotonic() - started) * 1000),
+        message_chars=len(body.message), images=image_count,
+        tools=[audit.tool_entry(t) for t in (result.tool_log if result else [])],
+        files=len(result.files) if result else 0,
+        pictures=len(result.pictures) if result else 0)
+
+
+# A plain "def" (not async): FastAPI runs it in a worker thread, so one slow
+# model call does not freeze the other users' requests.
 @app.post("/chat", response_model=ChatResponse)
-def chat(body: ChatRequest, ctx: UserContext = Depends(current_user)):
-    images = decode_images(body.images)
+def chat(request: Request, body: ChatRequest, ctx: UserContext = Depends(current_user),
+         creds: Credentials | None = Depends(request_credentials)):
+    started = time.monotonic()
     cid = body.conversation_id or uuid.uuid4().hex
+    if (settings.frappe_auth_mode == "user_session" and not _is_dev(ctx)
+            and creds is None):      # a real login we cannot forward: refuse, never downgrade
+        _auth_audit(request, gateway.client_ip(request), 401, "no_usable_credentials")
+        raise HTTPException(status_code=401, detail="Your sign-in is not valid.")
+    wait = gateway.chat_limiter.hit(ctx.user_id)
+    if wait:
+        _audit_chat(request, ctx, cid, body, 0, "rate_limited", started)
+        raise HTTPException(status_code=429, detail=gateway.wait_message(wait),
+                            headers={"Retry-After": str(wait)})
+    try:
+        images = decode_images(body.images)
+    except HTTPException as exc:
+        _audit_chat(request, ctx, cid, body, len(body.images),
+                    f"rejected_{exc.status_code}", started)
+        raise
     key = (ctx.user_id, cid)  # tied to the user, so IDs cannot be borrowed
 
     with _lock:
         saved = _store.get(key)
     history, vault = (list(saved[0]), saved[1]) if saved else ([], None)
     try:
-        result = run_agent(body.message, ctx, history=history, vault=vault, images=images)
+        own_login = creds if (settings.frappe_auth_mode == "user_session"
+                              and not _is_dev(ctx)) else None
+        with use_credentials(own_login):
+            result = run_agent(body.message, ctx, history=history, vault=vault, images=images)
     except LLMBusy as exc:
         log.warning("LLM busy for %s: %s", ctx.user_id, exc)
+        _audit_chat(request, ctx, cid, body, len(images), "llm_busy", started)
         raise HTTPException(status_code=503,
                             detail="The assistant is busy right now. Please try again in a minute.")
     except LLMError as exc:
         log.error("LLM failure for %s: %s", ctx.user_id, exc)
+        _audit_chat(request, ctx, cid, body, len(images), "llm_error", started)
         raise HTTPException(status_code=503,
                             detail="The assistant is unavailable right now. Please try again.")
-
     with _lock:
         _store[key] = (trim(result.messages), result.vault)
         _store.move_to_end(key)
         while len(_store) > MAX_CONVERSATIONS:
             _store.popitem(last=False)
 
+    _audit_chat(request, ctx, cid, body, len(images), "ok", started, result)
     return ChatResponse(answer=result.answer, conversation_id=cid,
                         files=[FileInfo(**f) for f in result.files],
                         pictures=[PictureInfo(**p) for p in result.pictures])
 
 
 @app.get("/reports/{report_id}")
-def download_report(report_id: str = PathParam(pattern=r"^[0-9a-f]{32}$"),
+def download_report(request: Request,
+                    report_id: str = PathParam(pattern=r"^[0-9a-f]{32}$"),
                     ctx: UserContext = Depends(current_user)):
     stored = get_report(report_id, ctx.user_id)  # only the person who asked gets it
+    _audit_download(request, ctx, "report", stored is not None)  # only the person who asked gets it
     if stored is None:
         raise HTTPException(status_code=404, detail="This report is no longer available.")
     return FileResponse(stored.path, filename=stored.name)
 
 @app.get("/pictures/{picture_id}")
-def show_picture(picture_id: str = PathParam(pattern=r"^[0-9a-f]{32}$"),
+def show_picture(request: Request,
+                 picture_id: str = PathParam(pattern=r"^[0-9a-f]{32}$"),
                  ctx: UserContext = Depends(current_user)):
     picture = get_picture(picture_id, ctx.user_id)  # only the person who asked gets it
+    _audit_download(request, ctx, "picture", picture is not None)  # only the person who asked gets it
     if picture is None:
         raise HTTPException(status_code=404, detail="This picture is no longer available.")
     return Response(content=picture.data, media_type=picture.mime,

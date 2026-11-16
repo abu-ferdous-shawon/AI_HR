@@ -52,9 +52,22 @@ def register_confidential(names) -> None:
     EXTRA_CONFIDENTIAL.update(str(n).lower() for n in names)
 
 
+# Names that contain a confidential word but only hold a label, a date or a day count,
+# so the model may read them. A profile can still force one to be masked by listing it
+# in its confidential_fields.
+NOT_CONFIDENTIAL = {
+    "salary_component", "salary_structure", "earning_component",
+    "payroll_frequency", "payroll_date", "bonus_payment_date", "leave_without_pay",
+}
+
+
 def is_confidential(field_name: str) -> bool:
     name = str(field_name).lower()
-    return (name in CONFIDENTIAL_FIELDS or name in EXTRA_CONFIDENTIAL
+    if name in EXTRA_CONFIDENTIAL:          # a profile's own list always wins
+        return True
+    if name in NOT_CONFIDENTIAL:
+        return False
+    return (name in CONFIDENTIAL_FIELDS
             or any(word in CONFIDENTIAL_WORDS for word in name.split("_")))
 
 def format_number(value) -> str:

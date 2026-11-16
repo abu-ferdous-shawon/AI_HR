@@ -1,12 +1,33 @@
 import datetime
 
-from app.core.frappe_client import get_frappe_client
+from app.core.frappe_client import FrappeError, get_frappe_client
 from app.core.security import UserContext
 from app.tools.common import resolve_range
 from app.tools.registry import tool
 
 MAX_HOLIDAYS = 60
 WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+
+def _assigned_list(frappe, employee_id, department, company, today):
+    """Holiday list from Holiday List Assignment: the person, then department, then company."""
+    for kind, target in (("Employee", employee_id), ("Department", department),
+                         ("Company", company)):
+        if not target:
+            continue
+        try:
+            rows = frappe.get_list(
+                "Holiday List Assignment", ["holiday_list", "from_date"],
+                filters=[["applicable_for", "=", kind], ["assigned_to", "=", target],
+                         ["docstatus", "!=", 2]],
+                order_by="from_date desc", limit=20)
+        except FrappeError:        # doctype missing or not readable: try the next way
+            return None
+        rows = [r for r in rows if r.get("holiday_list")]
+        if rows:
+            current = [r for r in rows if str(r.get("from_date") or "") <= today.isoformat()]
+            return (current or rows)[0]["holiday_list"]
+    return None
 
 
 def fetch_holidays(ctx: UserContext, start: datetime.date, end: datetime.date,
@@ -17,8 +38,14 @@ def fetch_holidays(ctx: UserContext, start: datetime.date, end: datetime.date,
     row = rows[0] if rows else {}
 
     list_name = row.get("holiday_list")
+    if not list_name:
+        list_name = _assigned_list(frappe, ctx.employee_id, row.get("department"),
+                                   row.get("company"), datetime.date.today())
     if not list_name and row.get("company"):
-        list_name = frappe.get_doc("Company", row["company"]).get("default_holiday_list")
+        try:
+            list_name = frappe.get_doc("Company", row["company"]).get("default_holiday_list")
+        except FrappeError:
+            list_name = None
     if not list_name:
         return {"holiday_list": None, "holidays": [],
                 "note": "No holiday list is assigned to you or to your company."}

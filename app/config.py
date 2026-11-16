@@ -1,3 +1,4 @@
+from typing import Literal
 from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -35,6 +36,33 @@ class Settings(BaseSettings):
     # Employee IDs (comma separated) who always count as HR, whatever their roles.
     # HR role names themselves are set in the registry profile (access.hr_roles).
     hr_admin_employees: str = ""
+
+    # How the ERP is called for a person's data:
+    #   user_session    as the logged-in person, so the ERP enforces their own roles,
+    #                   user permissions and field permissions (default)
+    #   service_account with the integration API key; only this app's rules apply
+    frappe_auth_mode: Literal["user_session", "service_account"] = "user_session"
+
+    # Gateway limits (0 turns a limit off).
+    rate_limit_chat_per_minute: int = 20
+    rate_limit_auth_fail_per_minute: int = 10   # failed sign-ins per IP
+    max_request_bytes: int = 20_000_000
+    # True only behind your own web server on this machine, which must send X-Real-IP.
+    trust_proxy: bool = False
+
+    # Audit log (one JSON line per event) and application log. "-" = standard output.
+    audit_log_file: str = "logs/audit.jsonl"
+    audit_log_max_mb: int = 10
+    audit_log_backups: int = 10
+    log_json: bool = True
+    log_file: str = ""
+    log_max_mb: int = 10
+    log_backups: int = 5
+
+    # Deployment (Phase 6)
+    environment: str = "development"   # "production" on the VM
+    allowed_origins: str = ""          # extra exact browser origins, comma separated
+    log_level: str = "INFO"
 
 
 # One shared copy that the rest of the code imports.

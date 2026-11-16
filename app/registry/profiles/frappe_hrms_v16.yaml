@@ -1,0 +1,722 @@
+name: frappe-hrms-v16
+erp: frappe
+description: "Stock Frappe HRMS v16. Entries marked verify: true use names not yet confirmed on a real site; check them with the structure probe."
+
+employee:
+  doctype: Employee
+  name_field: employee_name
+  user_field: user_id
+  reports_to_field: reports_to
+  status_field: status
+  active_value: Active
+  department_field: department
+  designation_field: designation
+
+access:
+  hr_roles: [HR Manager, HR User]
+  manager_roles: []              # empty = anyone with direct reports may use team scope
+  user_doctype: User
+  user_roles_field: roles
+  role_name_field: role
+  role_method_param: uid
+  # Whitelisted methods that return a person's roles. Tried as the person, then as the
+  # key. One that does not exist on your ERP is skipped and recorded.
+  role_methods: [frappe.core.doctype.user.user.get_roles]
+  # Fallback when the ERP cannot tell. A person matching ANY list gets the role. Example:
+  #   - role: HR Manager
+  #     designations: [HR Manager]
+  #     departments: [Human Resources]
+  role_map: []
+
+limits: {default_limit: 20, max_limit: 100, max_rows: 2000}
+
+record_types:
+
+  attendance:
+    doctype: Attendance
+    label: Attendance records
+    description: "Daily attendance: present, absent, on leave, half day."
+    aliases:
+      en: [attendance, attendance record, present days, absent days]
+      bn: [হাজিরা, উপস্থিতি]
+      banglish: [hajira, uposthiti]
+    employee_field: employee
+    date_field: attendance_date
+    status_field: status
+    status_values: [Present, Absent, On Leave, Half Day, Work From Home]
+    docstatus: [1]
+    fields: [name, employee, employee_name, attendance_date, status, leave_type, shift, in_time, out_time, working_hours, late_entry, early_exit, department]
+    group_by_allowed: [status, leave_type, department, employee_name]
+    aggregations:
+      total_hours: {op: sum, field: working_hours, label: Total working hours}
+    order_by: attendance_date desc
+    scopes: [self, team, company]
+
+  attendance_request:
+    doctype: Attendance Request
+    label: Attendance requests
+    description: "Requests to mark attendance for work from home or on duty days."
+    aliases:
+      en: [attendance request, work from home request, on duty request, regularization]
+      bn: [হাজিরার আবেদন]
+      banglish: [hajirar abedon]
+    employee_field: employee
+    date_field: from_date
+    date_end_field: to_date
+    docstatus: [0, 1]
+    fields: [name, employee, employee_name, from_date, to_date, reason, half_day, half_day_date, explanation, department, shift]
+    confidential_fields: [explanation]
+    group_by_allowed: [reason, department]
+    order_by: from_date desc
+    scopes: [self, team, company]
+
+  employee_checkin:
+    doctype: Employee Checkin
+    label: Check-in logs
+    description: "Clock-in and clock-out punches with their time."
+    aliases:
+      en: [check-in, checkin, check in, punch in, punch out, clock in]
+      bn: [চেক-ইন, পাঞ্চ]
+      banglish: [chekin, panch]
+    employee_field: employee
+    date_field: time
+    date_is_datetime: true
+    fields: [name, employee, employee_name, log_type, time, shift, device_id]
+    group_by_allowed: [log_type, shift]
+    order_by: time desc
+    scopes: [self, team, company]
+
+  leave_application:
+    doctype: Leave Application
+    label: Leave applications
+    description: "Leave requests with dates, days and approval status."
+    aliases:
+      en: [leave application, leave applications, leave history, applied leave, leave request]
+      bn: [ছুটির আবেদন, ছুটির ইতিহাস]
+      banglish: [chutir abedon, chuti abedon, leave abedon]
+    employee_field: employee
+    date_field: from_date
+    date_end_field: to_date
+    status_field: status
+    status_values: [Open, Approved, Rejected, Cancelled]
+    docstatus: [0, 1]
+    fields: [name, employee, employee_name, leave_type, from_date, to_date, half_day, half_day_date, total_leave_days, status, posting_date, description, department]
+    confidential_fields: [description]
+    group_by_allowed: [leave_type, status, department, employee_name]
+    aggregations:
+      total_days: {op: sum, field: total_leave_days, label: Total leave days}
+    order_by: from_date desc
+    scopes: [self, team, company]
+
+  leave_allocation:
+    doctype: Leave Allocation
+    label: Leave allocations
+    description: "Leave days granted per leave type and period."
+    aliases:
+      en: [leave allocation, leave allocations, leave entitlement, allocated leave]
+      bn: [ছুটির বরাদ্দ]
+      banglish: [chutir boraddo]
+    employee_field: employee
+    date_field: from_date
+    date_end_field: to_date
+    docstatus: [1]
+    fields: [name, employee, employee_name, leave_type, from_date, to_date, new_leaves_allocated, unused_leaves, total_leaves_allocated, carry_forward, leave_policy, department]
+    group_by_allowed: [leave_type, department, employee_name]
+    aggregations:
+      total_allocated: {op: sum, field: total_leaves_allocated, label: Total leave days allocated}
+    order_by: from_date desc
+    scopes: [self, team, company]
+
+  leave_policy_assignment:
+    doctype: Leave Policy Assignment
+    label: Leave policy assignments
+    description: "Which leave policy applies to an employee and for what period."
+    aliases:
+      en: [leave policy assignment, assigned leave policy]
+      bn: [বরাদ্দকৃত ছুটির নীতি]
+      banglish: [leave policy assign]
+    employee_field: employee
+    date_field: effective_from
+    date_end_field: effective_to
+    docstatus: [1]
+    fields: [name, employee, employee_name, leave_policy, assignment_based_on, effective_from, effective_to, leaves_allocated, carry_forward]
+    group_by_allowed: [leave_policy]
+    order_by: effective_from desc
+    scopes: [self, team, company]
+
+  holiday_list_assignment:
+    doctype: Holiday List Assignment
+    label: Holiday list assignments
+    description: "Which holiday list is assigned to an employee."
+    aliases:
+      en: [holiday list assignment, assigned holiday list]
+      bn: [ছুটির তালিকা বরাদ্দ]
+      banglish: [holiday list boraddo]
+    employee_field: assigned_to
+    base_filters: [[applicable_for, "=", Employee]]
+    fields: [name, applicable_for, assigned_to, holiday_list, from_date]
+    group_by_allowed: [holiday_list]
+    order_by: modified desc
+    scopes: [self, company]
+    verify: true
+    notes: "New in recent HRMS; field names unconfirmed. Older sites assign the list on the Employee record."
+
+  employee_onboarding:
+    doctype: Employee Onboarding
+    label: Onboarding
+    description: "New joiner onboarding with its activities and progress."
+    aliases:
+      en: [onboarding, employee onboarding, joining process]
+      bn: [অনবোর্ডিং]
+      banglish: [onbording]
+    employee_field: employee
+    date_field: date_of_joining
+    status_field: boarding_status
+    status_values: [Pending, In Process, Completed]
+    docstatus: [0, 1]
+    fields: [name, employee, employee_name, job_applicant, boarding_status, boarding_begins_on, date_of_joining, department, designation, company]
+    child_tables:
+      activities: {fields: [activity_name, role, user, begin_on, duration], max_rows: 30}
+    group_by_allowed: [boarding_status, department]
+    order_by: date_of_joining desc
+    scopes: [self, company]
+    verify: true
+
+  employee_transfer:
+    doctype: Employee Transfer
+    label: Transfers
+    description: "Transfers between departments, branches or companies."
+    aliases:
+      en: [transfer, employee transfer, transfers]
+      bn: [বদলি]
+      banglish: [bodoli]
+    employee_field: employee
+    date_field: transfer_date
+    docstatus: [0, 1]
+    fields: [name, employee, employee_name, transfer_date, company, new_company, department]
+    child_tables:
+      transfer_details: {fields: [property, current, new], max_rows: 20}
+    order_by: transfer_date desc
+    scopes: [self, company]
+    verify: true
+
+  employee_promotion:
+    doctype: Employee Promotion
+    label: Promotions
+    description: "Promotions with what changed (designation, grade, pay)."
+    aliases:
+      en: [promotion, promotions, employee promotion]
+      bn: [পদোন্নতি]
+      banglish: [podonnoti]
+    employee_field: employee
+    date_field: promotion_date
+    docstatus: [0, 1]
+    fields: [name, employee, employee_name, promotion_date, company, department]
+    child_tables:
+      promotion_details: {fields: [property, current, new], max_rows: 20}
+    order_by: promotion_date desc
+    scopes: [self, company]
+    verify: true
+
+  employee_grievance:
+    doctype: Employee Grievance
+    label: Grievances
+    description: "Grievances the employee raised and how they were resolved."
+    aliases:
+      en: [grievance, grievances, complaint, complaints]
+      bn: [অভিযোগ]
+      banglish: [obhijog, abhijog]
+    employee_field: raised_by
+    date_field: date
+    status_field: status
+    status_values: [Open, Investigated, Resolved, Invalid, Cancelled]
+    fields: [name, raised_by, employee_name, date, status, grievance_type, grievance_against_party, grievance_against, description, resolution_date, resolution_detail, cause_of_grievance]
+    confidential_fields: [grievance_against, description, resolution_detail, cause_of_grievance]
+    group_by_allowed: [status, grievance_type]
+    order_by: date desc
+    scopes: [self, company]
+    verify: true
+
+  employee_separation:
+    doctype: Employee Separation
+    label: Separations
+    description: "Exit process after resignation or termination."
+    aliases:
+      en: [separation, employee separation, offboarding, resignation process]
+      bn: [চাকরি থেকে বিদায়]
+      banglish: [chakri charar process]
+    employee_field: employee
+    date_field: resignation_letter_date
+    status_field: boarding_status
+    status_values: [Pending, In Process, Completed]
+    docstatus: [0, 1]
+    fields: [name, employee, employee_name, boarding_status, resignation_letter_date, boarding_begins_on, department, designation, company]
+    child_tables:
+      activities: {fields: [activity_name, role, user, begin_on, duration], max_rows: 30}
+    group_by_allowed: [boarding_status, department]
+    order_by: resignation_letter_date desc
+    scopes: [self, company]
+    verify: true
+
+  exit_interview:
+    doctype: Exit Interview
+    label: Exit interviews
+    description: "Exit interview schedule and outcome."
+    aliases:
+      en: [exit interview, exit interviews]
+      bn: [এক্সিট ইন্টারভিউ]
+      banglish: [exit intarvyu]
+    employee_field: employee
+    date_field: date
+    status_field: status
+    status_values: [Pending, Scheduled, Completed, Cancelled]
+    docstatus: [0, 1]
+    fields: [name, employee, employee_name, status, date, department, designation,  relieving_date, interview_summary]
+    confidential_fields: [interview_summary]
+    group_by_allowed: [status, department]
+    order_by: date desc
+    scopes: [self, company]
+    verify: true
+
+  full_and_final_statement:
+    doctype: Full and Final Statement
+    label: Full and final statements
+    description: "Final settlement of dues after separation."
+    aliases:
+      en: ["full and final", "full and final statement", final settlement, "f&f"]
+      bn: [চূড়ান্ত নিষ্পত্তি]
+      banglish: [churanto nishpotti]
+    employee_field: employee
+    date_field: transaction_date
+    status_field: status
+    status_values: [Unpaid, Paid, Cancelled]
+    docstatus: [0, 1]
+    fields: [name, employee, employee_name, transaction_date, status, relieving_date, total_payable_amount, total_receivable_amount, company]
+    confidential_fields: [total_payable_amount, total_receivable_amount]
+    child_tables:
+      payables: {fields: [component, reference_document_type, reference_document, amount, status], confidential_fields: [amount], max_rows: 30}
+      receivables: {fields: [component, reference_document_type, reference_document, amount, status], confidential_fields: [amount], max_rows: 30}
+    group_by_allowed: [status]
+    order_by: transaction_date desc
+    scopes: [self, company]
+    verify: true
+
+  salary_withholding:
+    doctype: Salary Withholding
+    label: Salary withholdings
+    description: "Periods for which salary is held back."
+    aliases:
+      en: [salary withholding, withheld salary, salary hold]
+      bn: [বেতন স্থগিত]
+      banglish: [beton stogito]
+    employee_field: employee
+    date_field: from_date
+    date_end_field: to_date
+    docstatus: [0, 1]
+    fields: [name, employee, employee_name, company, from_date, to_date, number_of_withholding_cycles]
+    order_by: from_date desc
+    scopes: [self, company]
+    verify: true
+
+  shift_request:
+    doctype: Shift Request
+    label: Shift requests
+    description: "Requests to change shift for a period."
+    aliases:
+      en: [shift request, shift change request]
+      bn: [শিফট পরিবর্তনের আবেদন]
+      banglish: [shift change abedon]
+    employee_field: employee
+    date_field: from_date
+    date_end_field: to_date
+    status_field: status
+    status_values: [Draft, Approved, Rejected]
+    docstatus: [0, 1]
+    fields: [name, employee, employee_name, shift_type, from_date, to_date, status, approver, department]
+    group_by_allowed: [shift_type, status, department]
+    order_by: from_date desc
+    scopes: [self, team, company]
+
+  shift_assignment:
+    doctype: Shift Assignment
+    label: Shift assignments
+    description: "Which shift an employee works and for what period."
+    aliases:
+      en: [shift assignment, my shift, shift schedule, roster]
+      bn: [শিফট বরাদ্দ]
+      banglish: [shift boraddo]
+    employee_field: employee
+    date_field: start_date
+    date_end_field: end_date
+    status_field: status
+    status_values: [Active, Inactive]
+    docstatus: [1]
+    fields: [name, employee, employee_name, shift_type, start_date, end_date, status, department]
+    group_by_allowed: [shift_type, status, department]
+    order_by: start_date desc
+    scopes: [self, team, company]
+
+  expense_claim:
+    doctype: Expense Claim
+    label: Expense claims
+    description: "Expense reimbursement claims and their approval and payment status."
+    aliases:
+      en: [expense claim, expense claims, expenses, reimbursement]
+      bn: [খরচের দাবি, খরচ]
+      banglish: [khoroch, khorocher dabi]
+    employee_field: employee
+    date_field: posting_date
+    status_field: status
+    status_values: [Draft, Paid, Unpaid, Rejected, Submitted, Cancelled, Partially Paid]
+    docstatus: [1]
+    fields: [name, employee, employee_name, posting_date, status, approval_status, total_claimed_amount, total_sanctioned_amount, total_amount_reimbursed, department, company]
+    confidential_fields: [total_claimed_amount, total_sanctioned_amount, total_amount_reimbursed]
+    child_tables:
+      expenses: {fields: [expense_date, expense_type, description, amount, sanctioned_amount], confidential_fields: [amount, sanctioned_amount], max_rows: 30}
+    group_by_allowed: [status, approval_status, department, employee_name]
+    aggregations:
+      total_claimed: {op: sum, field: total_claimed_amount, label: Total claimed, money: true}
+      total_sanctioned: {op: sum, field: total_sanctioned_amount, label: Total sanctioned, money: true}
+    order_by: posting_date desc
+    scopes: [self, company]
+
+  employee_benefit_application:
+    doctype: Employee Benefit Application
+    label: Benefit applications
+    description: "Flexible benefit applications for a payroll period."
+    aliases:
+      en: [benefit application, benefit applications, flexible benefit application]
+      bn: [সুবিধার আবেদন]
+      banglish: [subidhar abedon]
+    employee_field: employee
+    date_field: date
+    docstatus: [0, 1]
+    fields: [name, employee, employee_name, date, company, department, max_benefits, remaining_benefit]
+    confidential_fields: [max_benefits, remaining_benefit]
+    child_tables:
+      employee_benefits: {fields: [earning_component, amount], confidential_fields: [amount], max_rows: 30}
+    group_by_allowed: [department]
+    order_by: date desc
+    scopes: [self, company]
+    verify: true
+
+  employee_benefit_claim:
+    doctype: Employee Benefit Claim
+    label: Benefit claims
+    description: "Claims made against flexible benefits."
+    aliases:
+      en: [benefit claim, benefit claims]
+      bn: [সুবিধার দাবি]
+      banglish: [subidhar dabi]
+    employee_field: employee
+    date_field: claim_date
+    docstatus: [1]
+    fields: [name, employee, employee_name, claim_date, earning_component, claimed_amount, max_amount_eligible, department]
+    confidential_fields: [claimed_amount, max_amount_eligible]
+    group_by_allowed: [earning_component, department]
+    aggregations:
+      total_claimed: {op: sum, field: claimed_amount, label: Total claimed, money: true}
+    order_by: claim_date desc
+    scopes: [self, company]
+
+  salary_structure_assignment:
+    doctype: Salary Structure Assignment
+    label: Salary structure assignments
+    description: "Which salary structure and base pay apply from which date."
+    aliases:
+      en: [salary structure, salary structure assignment, my salary structure]
+      bn: [বেতন কাঠামো]
+      banglish: [beton kathamo]
+    employee_field: employee
+    date_field: from_date
+    docstatus: [1]
+    fields: [name, employee, employee_name, salary_structure, from_date, base, variable, currency, department, designation]
+    confidential_fields: [base, variable]
+    group_by_allowed: [salary_structure, department]
+    aggregations:
+      total_base: {op: sum, field: base, label: Total base pay, money: true}
+    order_by: from_date desc
+    scopes: [self, company]
+
+  salary_slip:
+    doctype: Salary Slip
+    label: Salary slips
+    description: "Monthly salary slips with earnings, deductions and net pay."
+    aliases:
+      en: [salary slip, salary slips, payslip, payslips, pay slip]
+      bn: [বেতন স্লিপ, বেতনের স্লিপ]
+      banglish: [beton slip, beton er slip]
+    employee_field: employee
+    date_field: start_date
+    date_end_field: end_date
+    status_field: status
+    status_values: [Draft, Submitted, Cancelled, Withheld]
+    docstatus: [1]
+    fields: [name, employee, employee_name, posting_date, start_date, end_date, status, salary_structure, payroll_frequency, currency, gross_pay, total_deduction, net_pay, rounded_total, total_working_days, payment_days, leave_without_pay, absent_days, department, designation]
+    confidential_fields: [gross_pay, total_deduction, net_pay, rounded_total]
+    child_tables:
+      earnings: {fields: [salary_component, amount], confidential_fields: [amount], max_rows: 30}
+      deductions: {fields: [salary_component, amount], confidential_fields: [amount], max_rows: 30}
+    group_by_allowed: [status, salary_structure, department, employee_name, payroll_frequency]
+    aggregations:
+      total_gross: {op: sum, field: gross_pay, label: Total gross pay, money: true}
+      total_net: {op: sum, field: net_pay, label: Total net pay, money: true}
+      total_deductions: {op: sum, field: total_deduction, label: Total deductions, money: true}
+    order_by: start_date desc
+    scopes: [self, company]
+
+  additional_salary:
+    doctype: Additional Salary
+    label: Additional salaries
+    description: "One-off or recurring extra earnings and deductions."
+    aliases:
+      en: [additional salary, extra payment]
+      bn: [অতিরিক্ত বেতন]
+      banglish: [atirikto beton]
+    employee_field: employee
+    date_field: payroll_date
+    docstatus: [1]
+    fields: [name, employee, employee_name, salary_component, type, amount, payroll_date, from_date, to_date, is_recurring, department]
+    confidential_fields: [amount]
+    group_by_allowed: [salary_component, type, department]
+    aggregations:
+      total_amount: {op: sum, field: amount, label: Total amount, money: true}
+    order_by: payroll_date desc
+    scopes: [self, company]
+
+  timesheet:
+    doctype: Timesheet
+    label: Timesheets
+    description: "Hours logged per activity."
+    aliases:
+      en: [timesheet, timesheets, hours worked]
+      bn: [টাইমশিট]
+      banglish: [taimshit]
+    employee_field: employee
+    date_field: start_date
+    date_end_field: end_date
+    status_field: status
+    status_values: [Draft, Submitted, Billed, Partially Billed, Payslip, Completed, Cancelled]
+    docstatus: [0, 1]
+    fields: [name, employee, employee_name, start_date, end_date, total_hours, status, department]
+    child_tables:
+      time_logs: {fields: [activity_type, from_time, to_time, hours, project, task, description], max_rows: 30}
+    group_by_allowed: [status, department, employee_name]
+    aggregations:
+      total_hours: {op: sum, field: total_hours, label: Total hours}
+    order_by: start_date desc
+    scopes: [self, team, company]
+
+  employee_incentive:
+    doctype: Employee Incentive
+    label: Incentives
+    description: "Incentive payments added to payroll."
+    aliases:
+      en: [incentive, incentives, employee incentive]
+      bn: [ইনসেনটিভ]
+      banglish: [insentib]
+    employee_field: employee
+    date_field: payroll_date
+    docstatus: [1]
+    fields: [name, employee, employee_name, payroll_date, salary_component, incentive_amount, currency, department]
+    confidential_fields: [incentive_amount]
+    group_by_allowed: [salary_component, department]
+    aggregations:
+      total_incentive: {op: sum, field: incentive_amount, label: Total incentive, money: true}
+    order_by: payroll_date desc
+    scopes: [self, company]
+
+  retention_bonus:
+    doctype: Retention Bonus
+    label: Retention bonuses
+    description: "Bonuses paid for staying with the company."
+    aliases:
+      en: [retention bonus, retention]
+      bn: [রিটেনশন বোনাস]
+      banglish: [retention bonas]
+    employee_field: employee
+    date_field: bonus_payment_date
+    docstatus: [1]
+    fields: [name, employee, employee_name, bonus_payment_date, bonus_amount, currency, salary_component, department]
+    confidential_fields: [bonus_amount]
+    group_by_allowed: [department]
+    aggregations:
+      total_bonus: {op: sum, field: bonus_amount, label: Total bonus, money: true}
+    order_by: bonus_payment_date desc
+    scopes: [self, company]
+    verify: true
+
+  overtime_slip:
+    doctype: Overtime Slip
+    label: Overtime slips
+    description: "Overtime hours for a period."
+    aliases:
+      en: [overtime, overtime slip, overtime hours]
+      bn: [ওভারটাইম]
+      banglish: [obhartaim]
+    employee_field: employee
+    date_field: start_date
+    date_end_field: end_date
+    status_field: status
+    status_values: [Draft, Pending, Approved, Rejected, Cancelled]
+    docstatus: [0, 1]
+    fields: [name, employee, employee_name, posting_date, start_date, end_date, status, total_overtime_hours, department]
+    group_by_allowed: [status, department]
+    aggregations:
+      total_overtime_hours: {op: sum, field: total_overtime_hours, label: Total overtime hours}
+    order_by: start_date desc
+    scopes: [self, company]
+    verify: true
+
+  arrear:
+    doctype: Arrear
+    label: Arrears
+    description: "Back pay owed to an employee."
+    aliases:
+      en: [arrear, arrears]
+      bn: [বকেয়া বেতন]
+      banglish: [bokeya beton]
+    employee_field: employee
+    date_field: creation
+    date_is_datetime: true
+    fields: [name, employee, employee_name, creation]
+    order_by: creation desc
+    scopes: [self, company]
+    verify: true
+    notes: "Stock HRMS has no Arrear doctype; arrears are usually Additional Salary entries. Confirm, or disable this type in a customer profile."
+
+  payroll_correction:
+    doctype: Payroll Correction
+    label: Payroll corrections
+    description: "Corrections applied to payroll."
+    aliases:
+      en: [payroll correction, salary correction]
+      bn: [বেতন সংশোধন]
+      banglish: [beton songshodhon]
+    employee_field: employee
+    date_field: creation
+    date_is_datetime: true
+    fields: [name, employee, employee_name, company, creation]
+    order_by: creation desc
+    scopes: [self, company]
+    verify: true
+
+  training_event:
+    doctype: Training Event
+    label: Training events
+    description: "Training sessions the employee is invited to or attended."
+    aliases:
+      en: [training, training event, training events, course]
+      bn: [প্রশিক্ষণ]
+      banglish: [proshikkhon, training program]
+    employee_via: {child_doctype: Training Event Employee, child_field: employee, parent_field: parent, table_field: employees}
+    date_field: start_time
+    date_is_datetime: true
+    status_field: event_status
+    status_values: [Scheduled, Completed, Cancelled]
+    docstatus: [0, 1]
+    fields: [name, event_name, start_time, end_time, event_status, trainer_name, location, course]
+    child_tables:
+      employees: {fields: [employee, employee_name, status], max_rows: 50}
+    group_by_allowed: [event_status, trainer_name]
+    order_by: start_time desc
+    scopes: [self, team, company]
+    verify: true
+
+  training_result:
+    doctype: Training Result
+    label: Training results
+    description: "Marks and grades from training events."
+    aliases:
+      en: [training result, training results, training score]
+      bn: [প্রশিক্ষণের ফলাফল]
+      banglish: [proshikkhoner fol]
+    employee_via: {child_doctype: Training Result Employee, child_field: employee, parent_field: parent, table_field: employees}
+    date_field: creation
+    date_is_datetime: true
+    docstatus: [1]
+    fields: [name, training_event, creation]
+    child_tables:
+      employees: {fields: [employee, employee_name, hours, grade, comments], confidential_fields: [comments], max_rows: 50}
+    order_by: creation desc
+    scopes: [self, team, company]
+    verify: true
+
+  training_feedback:
+    doctype: Training Feedback
+    label: Training feedback
+    description: "Feedback the employee gave on a training event."
+    aliases:
+      en: [training feedback]
+      bn: [প্রশিক্ষণের মতামত]
+      banglish: [training motamot]
+    employee_field: employee
+    date_field: creation
+    date_is_datetime: true
+    docstatus: [0, 1]
+    fields: [name, employee, employee_name, training_event, feedback, creation]
+    confidential_fields: [feedback]
+    group_by_allowed: [training_event]
+    order_by: creation desc
+    scopes: [self, team, company]
+    verify: true
+
+  employee_skill_map:
+    doctype: Employee Skill Map
+    label: Skill maps
+    description: "Skills and proficiency recorded for an employee."
+    aliases:
+      en: [skill map, skills, employee skills, skill]
+      bn: [দক্ষতা]
+      banglish: [dokkhota]
+    employee_field: employee
+    fields: [name, employee, employee_name, designation]
+    child_tables:
+      employee_skills: {fields: [skill, proficiency, evaluation_date], max_rows: 50}
+    group_by_allowed: [designation]
+    order_by: modified desc
+    scopes: [self, team, company]
+    verify: true
+
+  appraisal:
+    doctype: Appraisal
+    label: Appraisals
+    description: "Performance appraisals with status and scores."
+    aliases:
+      en: [appraisal, appraisals, performance review, performance appraisal]
+      bn: [মূল্যায়ন]
+      banglish: [mullayon]
+    employee_field: employee
+    date_field: creation
+    date_is_datetime: true
+    status_field: status
+    status_values: [Draft, Submitted, Completed, Cancelled]
+    docstatus: [0, 1]
+    fields: [name, employee, employee_name, appraisal_cycle, status, final_score, avg_feedback_score, self_score, total_score, department, designation, creation]
+    confidential_fields: [final_score, avg_feedback_score, self_score, total_score]
+    group_by_allowed: [status, appraisal_cycle, department]
+    order_by: creation desc
+    scopes: [self, company]
+    verify: true
+
+  contract:
+    doctype: Contract
+    label: Contracts
+    description: "Employment contracts and their signing status."
+    aliases:
+      en: [contract, contracts, employment contract]
+      bn: [চুক্তি]
+      banglish: [chukti]
+    employee_field: party_name
+    base_filters: [[party_type, "=", Employee]]
+    date_field: start_date
+    date_end_field: end_date
+    status_field: status
+    status_values: [Unsigned, Active, Inactive, Cancelled]
+    docstatus: [0, 1]
+    fields: [name, party_name, start_date, end_date, status, is_signed, signed_on, contract_template, fulfilment_status]
+    group_by_allowed: [status]
+    order_by: start_date desc
+    scopes: [self, company]
+    verify: true
+    notes: "ERPNext Contract is party-based; employee contracts have party_type Employee."

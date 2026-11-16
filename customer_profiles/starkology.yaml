@@ -1,0 +1,55 @@
+# Draft profile written by: python -m app.registry.draft
+# Review it, then set REGISTRY_PROFILE to this file's path.
+# A value of null removes that entry from the profile it extends.
+extends: "frappe_hrms_v16"
+name: "frappe-hrms-v16-adjusted"
+record_types:
+  holiday_list_assignment: {verify: false}
+  employee_onboarding: {verify: false}
+  employee_transfer: {verify: false}
+  employee_promotion: {verify: false}
+  employee_grievance: {verify: false}
+  employee_separation: {verify: false}
+  exit_interview: {verify: false}
+  full_and_final_statement: {verify: false}
+  salary_withholding: {verify: false}
+  # employee_benefit_application: changed child tables: employee_benefits
+  employee_benefit_application:
+    child_tables:
+      employee_benefits:
+        fields: [amount]
+    verify: false
+  # employee_benefit_claim: dropped fields the ERP does not have: claim_date
+  # employee_benefit_claim: removed the date filter (the date field does not exist)
+  employee_benefit_claim:
+    fields: [name, employee, employee_name, earning_component, claimed_amount, max_amount_eligible, department]
+    order_by: modified desc
+    date_field: null
+    date_end_field: null
+  retention_bonus: {verify: false}
+  # overtime_slip: dropped fields the ERP does not have: status, total_overtime_hours
+  # overtime_slip: removed totals that used them: total_overtime_hours
+  # overtime_slip: removed the status filter (the status field does not exist)
+  overtime_slip:
+    fields: [name, employee, employee_name, posting_date, start_date, end_date, department]
+    group_by_allowed: [department]
+    aggregations: {total_overtime_hours: null}
+    status_field: null
+    status_values: []
+    verify: false
+  arrear: {verify: false}
+  payroll_correction: {verify: false}
+  training_event: {verify: false}
+  training_result: {verify: false}
+  training_feedback: {verify: false}
+  employee_skill_map: {verify: false}
+  # appraisal: dropped fields the ERP does not have: status
+  # appraisal: removed the status filter (the status field does not exist)
+  appraisal:
+    fields: [name, employee, employee_name, appraisal_cycle, final_score, avg_feedback_score, self_score,
+      total_score, department, designation, creation]
+    group_by_allowed: [appraisal_cycle, department]
+    status_field: null
+    status_values: []
+    verify: false
+  contract: {verify: false}

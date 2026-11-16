@@ -121,6 +121,19 @@ class FrappeClient:
         """Call a whitelisted Frappe function, e.g. frappe.auth.get_logged_user."""
         return self._get(f"/api/method/{method_path}", params).get("message")
 
+    def get_meta(self, doctype: str) -> list[dict[str, Any]]:
+        """The form's own field list for a doctype and its child tables.
+
+        The answer sits under 'docs', not 'message', which is why call_method cannot
+        read it. Returns [] when the ERP answers in another shape.
+        """
+        body = self._get("/api/method/frappe.desk.form.load.getdoctype", {"doctype": doctype})
+        docs = body.get("docs")
+        message = body.get("message")
+        if not docs and isinstance(message, dict):
+            docs = message.get("docs")
+        return [d for d in docs if isinstance(d, dict)] if isinstance(docs, list) else []
+
     @staticmethod
     def _safe_file_path(file_url: str) -> str:
         """Accept only a file path on THIS Frappe server (/files/... or /private/files/...)."""

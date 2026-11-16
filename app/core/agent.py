@@ -8,7 +8,8 @@ from app.core.llm import get_llm
 from app.core.llm.base import ImageData, LLMProvider, Message
 from app.core.masking import Vault
 from app.core.security import UserContext
-from app.tools.registry import get_tool_specs, load_all_tools, run_tool
+from app.core.audit import describe_result, safe_args
+from app.tools.registry import get_tool_specs, load_all_tools, run_tool, take_outcome
 
 log = logging.getLogger("hr_ai.agent")
 
@@ -119,7 +120,7 @@ def run_agent(question: str, ctx: UserContext,
         messages.append(Message("assistant", text=reply.text,
                                 tool_calls=reply.tool_calls, raw=reply.raw))
         for call in reply.tool_calls:
-            args, secret, result = call.args, False, None
+            args, secret, result, kind = call.args, False, None, None
 
             # A calculation may contain placeholders. The real numbers are filled in
             # HERE, on the server, and the answer is hidden behind a new placeholder.
@@ -129,17 +130,21 @@ def run_agent(question: str, ctx: UserContext,
                     args = {**call.args, "expression": expression}
                 except ValueError as exc:
                     result = {"error": str(exc)}
+                    kind = "invalid"
             if result is None:
+                take_outcome()                           # drop any stale label
                 result = run_tool(call.name, args, ctx)  # security lives here
+                kind = take_outcome()
 
             ok = "error" not in result
-            # Audit line: who, what, outcome. Results and real numbers are not logged.
-            tool_log.append({"tool": call.name, "args": call.args, "ok": ok,
-                             "error": result.get("error")})
-            log.info("user=%s tool=%s args=%s ok=%s",
-                     ctx.user_id, call.name, call.args, ok)
-
+            kind = kind or ("ok" if ok else "failed")
             payload = result.get("result")
+            # Audit data: who, what, outcome, row counts. No results, no real numbers.
+            tool_log.append({"tool": call.name, "args": call.args, "ok": ok,
+                             "error": result.get("error"), "kind": kind,
+                             **describe_result(payload)})
+            log.info("user=%s tool=%s args=%s ok=%s kind=%s",
+                     ctx.user_id, call.name, safe_args(call.args), ok, kind)
             if ok and isinstance(payload, dict):
                 if isinstance(payload.get("file"), dict):
                     files.append(payload["file"])        # a report: a download button

@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
 from app.core.frappe_client import FrappeError, get_frappe_client
+from app.core.masking import is_confidential
 from app.core.security import AccessDenied, ToolInputError, UserContext
 from app.records.scope import Access, resolve_access
 from app.registry import Profile, RecordType, get_profile
@@ -252,7 +253,8 @@ def _measure(agg, rows: list[dict]) -> tuple[float | int | None, int, int]:
     return float(result.quantize(CENT, rounding=ROUND_HALF_UP)), len(values), skipped
 
 
-def _groups(agg, rows: list[dict], field: str, figure: str) -> tuple[list[dict], bool]:
+def _groups(agg, rows: list[dict], field: str, figure: str,
+            label_key: str) -> tuple[list[dict], bool]:
     buckets = defaultdict(list)
     for row in rows:
         raw = row.get(field)
@@ -260,10 +262,9 @@ def _groups(agg, rows: list[dict], field: str, figure: str) -> tuple[list[dict],
     groups = []
     for label, items in buckets.items():
         value, _, _ = _measure(agg, items)
-        groups.append({"group": label, "records": len(items), figure: value})
-    groups.sort(key=lambda g: (g[figure] is None, -(g[figure] or 0), g["group"]))
+        groups.append({label_key: label, "records": len(items), figure: value})
+    groups.sort(key=lambda g: (g[figure] is None, -(g[figure] or 0), str(g[label_key])))
     return groups[:MAX_GROUPS], len(groups) > MAX_GROUPS
-
 
 def _choose(options: dict, text, what: str, default=None):
     if text is None or not str(text).strip():
@@ -302,7 +303,10 @@ def summarize_records(ctx: UserContext, record_type, *, aggregation=None, from_d
         return {**result, "outcome": "no_records", "records_counted": 0,
                 "message": f"No {rt.label.lower()} were found for these filters."}
 
-    figure = "amount" if agg.money else "value"          # 'amount' is masked from the model
+    # A total of a confidential field is confidential, marked as money or not.
+    secret_total = agg.money or bool(agg.field and (
+        agg.field in rt.confidential_fields or is_confidential(agg.field)))
+    figure = "amount" if secret_total else "value"        # 'amount' is masked from the model         # 'amount' is masked from the model
     value, used, skipped = _measure(agg, rows)
     result.update(outcome="records", records_counted=len(rows), **{figure: value})
     result["statuses_included"] = ([query.status] if query.status else
@@ -314,7 +318,10 @@ def summarize_records(ctx: UserContext, record_type, *, aggregation=None, from_d
             result["skipped_non_numeric"] = skipped
     if group_field:
         result["group_by"] = group_field
-        result["groups"], more = _groups(agg, rows, group_field, figure)
+        # Group names of a confidential field travel under the field's own name, so masking hides them.
+        secret_label = group_field in rt.confidential_fields or is_confidential(group_field)
+        result["groups"], more = _groups(agg, rows, group_field, figure,
+                                         group_field if secret_label else "group")
         if more:
             result["groups_truncated"] = True
     return result

@@ -98,3 +98,20 @@ def test_a_list_with_only_weekly_offs_still_answers_next_holiday(monkeypatch):
     assert res["next_public_holiday"] is None
     assert res["next_weekly_off"]["date"] == rows[0]["holiday_date"]
     assert res["weekly_off_count"] == len(rows)
+
+def test_holiday_list_comes_from_holiday_list_assignment(monkeypatch):
+    class Assigned(FakeHolidays):
+        def get_list(self, doctype, fields=None, filters=None, order_by=None, limit=20, start=0):
+            if doctype == "Holiday List Assignment":
+                assert ["assigned_to", "=", "HR-EMP-00001"] in filters
+                return [{"holiday_list": "BD 2026", "from_date": "2026-01-01"}]
+            return [{"name": "HR-EMP-00001", "holiday_list": None, "company": "Starkology"}]
+
+        def get_doc(self, doctype, name):
+            assert doctype == "Holiday List"
+            return super().get_doc(doctype, name)
+
+    monkeypatch.setattr(holidays, "get_frappe_client", lambda: Assigned())
+    res = run_tool("get_holidays", {"from_date": "2026-01-01", "to_date": "2026-03-31"}, CTX)["result"]
+    assert res["holiday_list"] == "BD 2026"
+    assert [h["holiday"] for h in res["holidays"]] == ["Language Martyrs Day"]

@@ -1,8 +1,10 @@
 import re
 from dataclasses import dataclass
 
-from app.core.frappe_client import get_frappe_client
-from app.core.security import AccessDenied, ToolInputError, UserContext, get_team, is_hr_admin
+from app.core.frappe_client import get_service_client
+from app.core.security import (
+    AccessDenied, ToolInputError, UserContext, get_team, has_role, is_hr_admin,
+)
 from app.registry.models import Profile, RecordType, norm
 
 SCOPES = ("self", "team", "company")
@@ -32,6 +34,14 @@ def _same(text: str, emp_id: str, emp_name: str) -> bool:
     return wanted == norm(emp_id) or wanted in norm(emp_name)
 
 
+_ME_WORDS = {"me", "myself", "my", "i", "self", "own"}
+
+
+def _is_me(text: str, emp_id: str, emp_name: str) -> bool:
+    """Stricter than _same: in self scope only the person themselves, never a look-alike."""
+    wanted = norm(text)
+    return wanted in _ME_WORDS or wanted == norm(emp_id) or wanted == norm(emp_name)
+
 def _one(matches: list[dict], text: str) -> dict:
     if len(matches) == 1:
         return matches[0]
@@ -41,7 +51,8 @@ def _one(matches: list[dict], text: str) -> dict:
 
 
 def _find_employee(profile: Profile, text: str) -> list[dict]:
-    cfg, client = profile.employee, get_frappe_client()
+    """Name search for HR. A lookup of structure, so it uses the key."""
+    cfg, client = profile.employee, get_service_client()
     rows = client.get_list(cfg.doctype, ["name", cfg.name_field],
                            filters={"name": text}, limit=2)
     if not rows:
@@ -56,7 +67,12 @@ def _find_employee(profile: Profile, text: str) -> list[dict]:
 
 def resolve_access(ctx: UserContext, profile: Profile, rt: RecordType,
                    scope: str | None, employee: str | None) -> Access:
-    """Decide whose records may be read. Raises AccessDenied or ToolInputError."""
+    """Decide whose records may be read. Raises AccessDenied or ToolInputError.
+
+    self    everyone, their own records.
+    team    people with direct reports (and the manager role, if the profile asks for one).
+    company HR roles, or an employee listed in HR_ADMIN_EMPLOYEES.
+    """
     level = (scope or "self").strip().lower()
     if level not in SCOPES:
         raise ToolInputError("scope must be one of: self, team, company.")
@@ -68,16 +84,20 @@ def resolve_access(ctx: UserContext, profile: Profile, rt: RecordType,
     if level == "self":
         if text:
             cfg = profile.employee
-            own = get_frappe_client().get_list(
+            own = get_service_client().get_list(
                 cfg.doctype, [cfg.name_field], filters={"name": ctx.employee_id}, limit=1)
             own_name = (own[0].get(cfg.name_field) or "").strip() if own else ""
-            if not _same(text, ctx.employee_id, own_name):
+            if not _is_me(text, ctx.employee_id, own_name):
                 raise AccessDenied("You can only view your own records here. For other people "
                                    "use scope 'team' (your direct reports) or 'company' (HR only).")
         return Access("self", (ctx.employee_id,), None)
 
     if level == "team":
-        team = [{"id": m["name"], "name": (m.get("employee_name") or "").strip()}
+        needed = profile.access.manager_roles
+        if needed and not has_role(ctx, needed):
+            raise AccessDenied("Team records are available to managers only.")
+        name_field = profile.employee.name_field
+        team = [{"id": m["name"], "name": (m.get(name_field) or "").strip()}
                 for m in get_team(ctx)]
         if not team:
             raise AccessDenied("You have no direct reports, so team records are not available.")
@@ -89,7 +109,7 @@ def resolve_access(ctx: UserContext, profile: Profile, rt: RecordType,
             return Access("team", (chosen["id"],), chosen)
         return Access("team", tuple(m["id"] for m in team), None)
 
-    if not is_hr_admin(ctx):
+    if not is_hr_admin(ctx, profile):
         raise AccessDenied(f"Company-wide {rt.label.lower()} are available to HR only.")
     if text:
         chosen = _one(_find_employee(profile, text), text)

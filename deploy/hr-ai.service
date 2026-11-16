@@ -1,0 +1,33 @@
+[Unit]
+Description=HR AI assistant backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hrai
+Group=hrai
+WorkingDirectory=/opt/hr-ai
+EnvironmentFile=/etc/hr-ai/hr-ai.env
+Environment=PYTHONUNBUFFERED=1
+# ONE worker on purpose: conversations, vaults and report files live in memory.
+ExecStart=/opt/hr-ai/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8100 --proxy-headers --forwarded-allow-ips=127.0.0.1 --no-access-log
+Restart=on-failure
+RestartSec=3
+UMask=0077
+LogsDirectory=hr-ai
+LogsDirectoryMode=0750
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
