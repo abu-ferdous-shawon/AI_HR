@@ -56,14 +56,16 @@ def test_user_session_mode_reads_data_as_the_logged_in_user(api, monkeypatch):
 def test_a_cookie_login_forwards_only_the_session_id(api, monkeypatch):
     monkeypatch.setattr(main.settings, "frappe_auth_mode", "user_session")
     client, seen, _ = api
-    assert chat(client, Cookie=f"theme=dark; sid={SID}; other=1").status_code == 200
+    assert chat(client, Cookie=f"theme=dark; sid={SID}; other=1",
+                Origin="http://testserver").status_code == 200
     assert seen[0]["cookie"] == f"sid={SID}" and seen[0]["authorization"] is None
 
 
 def test_service_account_mode_never_uses_the_users_login(api, monkeypatch):
     monkeypatch.setattr(main.settings, "frappe_auth_mode", "service_account")
     client, seen, _ = api
-    assert chat(client, Authorization="token abc:def").status_code == 200
+    assert chat(client, Cookie=f"theme=dark; sid={SID}; other=1",
+                Origin="http://testserver").status_code == 200
     assert seen[0]["as_user"] is False and "abc:def" not in str(seen[0]["authorization"])
 
 
@@ -71,7 +73,8 @@ def test_a_real_login_without_usable_credentials_is_refused_not_downgraded(api, 
     monkeypatch.setattr(main.settings, "frappe_auth_mode", "user_session")
     client, seen, _ = api
     for headers in ({}, {"Authorization": "Basic dXNlcjpwYXNz"}, {"Cookie": "sid=Guest"}):
-        assert client.post("/chat", json={"message": "hi"}, headers=headers).status_code == 401
+        assert client.post("/chat", json={"message": "hi"},
+                           headers={"Origin": "http://testserver", **headers}).status_code == 401
     assert seen == []                                    # the agent never ran
 
 

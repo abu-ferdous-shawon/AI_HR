@@ -4,7 +4,7 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "hr_ai_widget"
-authors = [{ name = "Your Company", email = "it@example.com" }]
+authors = [{ name = "Starkology", email = "shawon@gmail.com" }]
 description = "HR Assistant chat widget for Frappe Desk"
 requires-python = ">=3.10"
 dynamic = ["version"]

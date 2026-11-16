@@ -22,6 +22,7 @@ from app.core.frappe_client import FrappeError, get_frappe_client
 from app.core.llm.base import ImageData, LLMBusy, LLMError, Message
 from app.core.masking import Vault
 from app.core import audit, gateway
+from app.core.hardening import OriginGuard, assert_safe_config, docs_settings, parse_origins
 from app.core.reports import get_report
 from app.core.credentials import Credentials, extract_credentials, use_credentials
 from app.core.security import AccessDenied, UserContext, build_context, resolve_context
@@ -38,12 +39,18 @@ log = logging.getLogger("hr_ai.api")
 async def lifespan(_app):
     audit.setup_app_logging()
     audit.configure()
+    load_all_tools()                      # a bad profile or tool stops startup here
+    for problem in masking_review(get_profile()):
+        log.warning("profile review: %s", problem)
     yield
     audit.close()
 
 
-app = FastAPI(title="HR AI Backend", lifespan=lifespan)
+_ORIGINS = parse_origins(settings.allowed_origins)
+assert_safe_config(settings.environment, settings.dev_mode, _ORIGINS)   # refuse unsafe start
+app = FastAPI(title="HR AI Backend", lifespan=lifespan, **docs_settings(settings.environment))
 gateway.install(app)
+app.add_middleware(OriginGuard, allowed=_ORIGINS)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 if settings.dev_mode:
