@@ -1,5 +1,4 @@
 import pytest
-from app.config import settings
 
 from app.tools.registry import load_all_tools
 
@@ -9,7 +8,18 @@ def _tools_loaded():
     """Register every tool once, before any test runs."""
     load_all_tools()
 
+
 @pytest.fixture(autouse=True)
-def _service_mode_by_default(monkeypatch):
-    """Most tests have no ERP login. Tests of the auth modes set the mode themselves."""
+def _fresh_limiters(monkeypatch):
+    """Every test starts with generous, empty rate limits."""
+    from app.core import gateway
+    from app.core.ratelimit import RateLimiter
+    monkeypatch.setattr(gateway, "chat_limiter", RateLimiter(1000))
+    monkeypatch.setattr(gateway, "auth_failures", RateLimiter(1000))
+
+
+@pytest.fixture(autouse=True)
+def _service_account_by_default(monkeypatch):
+    """Tests that fake the login send no headers. The ones that care set user_session."""
+    from app.config import settings
     monkeypatch.setattr(settings, "frappe_auth_mode", "service_account")

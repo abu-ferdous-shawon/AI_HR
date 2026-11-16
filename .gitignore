@@ -1,4 +1,5 @@
-.venv/
+.vscode
+logs/
 .env
 __pycache__/
 output.txt
@@ -13,5 +14,4 @@ image_fields.txt
 fields.txt
 context_pack.txt
 policies
-profiles
 .vscode

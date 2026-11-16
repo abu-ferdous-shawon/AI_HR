@@ -23,7 +23,7 @@ def world(monkeypatch):
 
 
 def mark(*parts: str) -> str:
-    return "SENTINEL_" + "_".join(parts)
+    return "SENTINEL_" + "_".join(parts) + "_END"
 
 
 @pytest.mark.parametrize("key", TYPES)

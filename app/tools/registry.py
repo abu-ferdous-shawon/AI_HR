@@ -1,6 +1,7 @@
 import importlib
 import logging
 import pkgutil
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -23,6 +24,16 @@ class Tool:
 
 
 _TOOLS: dict[str, Tool] = {}
+
+# How the last run_tool call ended: ok, denied, invalid, failed, unknown_tool.
+# Read once with take_outcome(). Only the audit log uses it; the model never sees it.
+_outcome: ContextVar[str | None] = ContextVar("tool_outcome", default=None)
+
+
+def take_outcome() -> str | None:
+    kind = _outcome.get()
+    _outcome.set(None)
+    return kind
 
 
 def tool(name: str, description: str, parameters: dict | None = None,
@@ -65,6 +76,7 @@ def run_tool(name: str, args: dict | None, ctx: UserContext) -> dict:
     """Run one tool safely. Always returns {'result': ...} or {'error': ...}."""
     selected = _TOOLS.get(name)
     if selected is None:
+        _outcome.set("unknown_tool")
         return {"error": f"Unknown tool '{name}'."}
 
     # Keep only inputs the tool declared. Anything else is silently dropped.
@@ -73,13 +85,22 @@ def run_tool(name: str, args: dict | None, ctx: UserContext) -> dict:
 
     try:
         if selected.hr_only and not is_hr_admin(ctx):
+            _outcome.set("denied")
             return {"error": HR_ONLY_MESSAGE}
-        return {"result": scrub(selected.func(ctx, **clean), selected.allow)}
-    except (AccessDenied, ToolInputError) as exc:
+        value = scrub(selected.func(ctx, **clean), selected.allow)
+        _outcome.set("ok")
+        return {"result": value}
+    except AccessDenied as exc:
+        _outcome.set("denied")
+        return {"error": str(exc)}
+    except ToolInputError as exc:
+        _outcome.set("invalid")
         return {"error": str(exc)}
     except FrappeError as exc:
+        _outcome.set("failed")
         log.warning("Frappe error in %s: %s", name, exc)  # details stay in the log
         return {"error": "The HR system could not complete this request."}
     except Exception:
+        _outcome.set("failed")
         log.exception("Unexpected error in tool %s", name)
         return {"error": "Something went wrong while running this tool."}

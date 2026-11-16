@@ -249,7 +249,11 @@ def analyse(key: str, rt: RecordType, seen: Observed) -> TypeReport:
         report.status_basis = "allowed by the ERP" if allowed else "in use"
         have = {norm(v) for v in rt.status_values}
         report.status_unknown = sorted(v for v in values if norm(v) not in have)
-
+    allowed = s.options.get(rt.status_field) if rt.status_field else None
+    values = allowed or seen.statuses
+    report.status_basis = "allowed by the ERP" if allowed else "in use"
+    have = {norm(v) for v in rt.status_values}
+    report.status_unknown = sorted(v for v in values if norm(v) not in have)
     used = set(rt.fields) | {f for f, _, _ in rt.base_filters}
     used |= {x for x in (rt.employee_field, rt.date_field, rt.date_end_field, rt.status_field) if x}
     report.extra = sorted(n for n in s.fields
