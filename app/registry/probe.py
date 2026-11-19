@@ -4,7 +4,7 @@ import sys
 from dataclasses import dataclass, field
 
 from app.config import settings
-from app.core.frappe_client import FrappeError, get_service_client
+from app.frappe_client.client import FrappeError, get_service_client
 from app.registry.loader import RegistryError, load_profile
 from app.registry.models import RecordType, norm
 

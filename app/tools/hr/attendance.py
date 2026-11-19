@@ -1,8 +1,8 @@
 import datetime
 from collections import Counter
 
-from app.core.frappe_client import get_frappe_client
-from app.core.security import ToolInputError, UserContext, require_access
+from app.frappe_client.client import get_frappe_client
+from app.auth.security import ToolInputError, UserContext, require_access
 from app.tools.registry import tool
 
 MAX_DAYS = 93  # about three months per request

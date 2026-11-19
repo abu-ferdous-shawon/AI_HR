@@ -96,3 +96,47 @@ frappe_app/ need `bench build` again.
 ## 7. Rollback
 `bench --site YOUR_SITE uninstall-app hr_ai_widget` removes the button.
 `sudo systemctl disable --now hr-ai` stops the backend. Remove the `location /ai/` block and reload nginx.
+## Phase 1 local verification
+
+Start the backend from the repository root using the same environment that
+can decrypt the configured secrets.
+
+```bash
+.venv/bin/python -m app.core.secret_store check
+DEV_MODE=false FRAPPE_AUTH_MODE=user_session .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8100
+```
+
+Open `http://localhost:8100/`. Sign in with a Frappe user token and send
+“Show my profile.” Repeat in a separate browser profile with another Frappe
+user and verify that each sees their own profile. For a restricted record
+check, use a record type available through the chat tools and confirm each
+user's access in Frappe Desk first. Each chat user needs exactly one active
+Employee linked to their Frappe login.
+
+For multiple sites, copy the structure in `sites.yaml` and set
+`SITES_FILE` to the configuration file. Use Frappe URLs for your actual sites.
+The browser's hostname chooses the site. Unlisted hostnames use the default
+site. Add the variables named by `api_key_env`, `api_secret_env` and optional
+`gemini_api_key_env` to the process environment or `.env`. Encrypt their
+values with `.venv/bin/python -m app.core.secret_store encrypt`. Site
+embedding, pack and schedule settings are consumed by the future indexing
+phase.
+
+### Live permission isolation test
+
+In a test Frappe site, prepare two non-admin users and two documents of the
+same DocType. Grant each user read access to one document and confirm that
+the other document is hidden in both list and direct document views.
+Export `FRAPPE_ISOLATION_DOCTYPE` and these variables for each of A and B:
+
+- `FRAPPE_ISOLATION_USER_A` and `FRAPPE_ISOLATION_USER_B` hold the Frappe logins.
+- `FRAPPE_ISOLATION_RECORD_A` and `FRAPPE_ISOLATION_RECORD_B` hold the document names.
+- `FRAPPE_ISOLATION_TOKEN_A` and `FRAPPE_ISOLATION_TOKEN_B` hold the full authorization headers.
+  Load them into your test shell without saving the tokens in shell history.
+
+Set `FRAPPE_ISOLATION_SITE` when testing a configured site other than the
+default. Then run:
+
+```bash
+.venv/bin/python -m pytest -o addopts='' -m integration -rs tests/test_frappe_permission_isolation.py
+```

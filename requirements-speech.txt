@@ -1,0 +1,7 @@
+torch
+transformers
+accelerate
+sentencepiece
+git+https://github.com/huggingface/parler-tts.git
+# optional, for Banglish replies:
+# ai4bharat-transliteration

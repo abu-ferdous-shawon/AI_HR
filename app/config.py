@@ -1,7 +1,8 @@
 from typing import Literal
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.secret_store import resolve_secret
 
 class Settings(BaseSettings):
     """All settings for the backend, loaded from environment variables or .env."""
@@ -9,17 +10,18 @@ class Settings(BaseSettings):
     # Read the .env file in the folder where you run the program.
     # extra="ignore" means unknown lines in .env do not cause errors.
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore"
+        env_file=".env", env_file_encoding="utf-8", extra="ignore", hide_input_in_errors=True
     )
 
-    # Frappe connection (required: no default, so a missing value is an error)
-    frappe_url: str
-    frappe_api_key: SecretStr
-    frappe_api_secret: SecretStr
+    # Single-site Frappe connection (required when SITES_FILE is empty)
+    frappe_url: str = ""
+    frappe_api_key: SecretStr = SecretStr("")
+    frappe_api_secret: SecretStr = SecretStr("")
 
     # LLM settings (used from Stage 2; defaults let Stage 1 run without them)
     llm_provider: str = "gemini"
     gemini_api_key: SecretStr = SecretStr("")
+    llm_model: str = ""
     gemini_model: str = "gemini-2.5-flash"
     # Testing shortcut: lets a browser on this machine chat as any employee.
     # Never turn this on for a server that other people can reach.
@@ -31,11 +33,38 @@ class Settings(BaseSettings):
     # Registry profile: a name in app/registry/profiles/ or a file path.
     registry_profile: str = "frappe_hrms_v16"
 
+    # Multi-site: a YAML file listing sites. Empty = ONE site built from the FRAPPE_* values above.
+    sites_file: str = ""
+
+    # Embeddings and knowledge packs (used from Phase 2; defaults apply to every site)
+    embedding_provider: str = "gemini"
+    embedding_model: str = "gemini-embedding-001"   # check it against your key, as with list_models.py
+    knowledge_packs: str = "hrms_core,erpnext_core"  # comma separated pack names
+    # "manual" or "every:<hours>", for example every:24
+    indexing_schedule: str = "manual"
+
     # How long a person's resolved roles are remembered (0 = ask every time).
     role_cache_seconds: int = 60
     # Employee IDs (comma separated) who always count as HR, whatever their roles.
     # HR role names themselves are set in the registry profile (access.hr_roles).
     hr_admin_employees: str = ""
+    # Speech (off by default; needs requirements-speech.txt)
+    speech_enabled: bool = False
+    speech_device: str = "auto"                 # auto, cpu, cuda:0
+    stt_model: str = "openai/whisper-large-v3"
+    tts_provider: str = "indic_parler"          # indic_parler or mms
+    tts_model: str = "ai4bharat/indic-parler-tts"
+    tts_model_bn: str = "Tanmoyshome/bn-parler-tts"     # Bangladeshi Bangla
+    tts_model_en: str = "ai4bharat/indic-parler-tts"    # English
+    tts_seed: int = 0  
+    tts_voice_bn: str = ("Aditi speaks in a clear, moderate-paced voice with a very "
+                         "clear recording and no background noise.")
+    tts_voice_en: str = ("A female speaker delivers clear, moderate-paced English speech "
+                         "with a very clear recording and no background noise.")
+    tts_transliterate_banglish: bool = True
+    tts_max_chars: int = 800
+    speech_max_concurrent: int = 1
+    speech_rate_per_minute: int = 20
 
     # How the ERP is called for a person's data:
     #   user_session    as the logged-in person, so the ERP enforces their own roles,
@@ -61,8 +90,27 @@ class Settings(BaseSettings):
 
     # Deployment (Phase 6)
     environment: str = "development"   # "production" on the VM
+    # Refuse to start if any secret is still plain text (turn on in production).
+    require_encrypted_secrets: bool = False
     allowed_origins: str = ""          # extra exact browser origins, comma separated
     log_level: str = "INFO"
+    @field_validator("frappe_api_key", "frappe_api_secret", "gemini_api_key", mode="before")
+    @classmethod
+    def _decrypt_secret(cls, value, info):
+        """'enc:v1:...' values are decrypted here; plain values pass through."""
+        if isinstance(value, str):
+            return resolve_secret(value, info.field_name.upper())
+        return value
+
+
+    @model_validator(mode="after")
+    def _require_single_site_connection(self):
+        if not self.sites_file.strip() and not all((
+            self.frappe_url.strip(), self.frappe_api_key.get_secret_value(),
+            self.frappe_api_secret.get_secret_value(),
+        )):
+            raise ValueError("Set FRAPPE_URL, FRAPPE_API_KEY and FRAPPE_API_SECRET or SITES_FILE")
+        return self
 
 
 # One shared copy that the rest of the code imports.

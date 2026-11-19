@@ -1,6 +1,6 @@
-from app.core.frappe_client import get_frappe_client
+from app.frappe_client.client import get_frappe_client
 from app.core.reports import save_report
-from app.core.security import (
+from app.auth.security import (
     AccessDenied, ToolInputError, UserContext, get_team, require_access,
 )
 from app.tools.common import resolve_range

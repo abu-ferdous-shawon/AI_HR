@@ -7,7 +7,7 @@ from app.core.language import language_hint
 from app.core.llm import get_llm
 from app.core.llm.base import ImageData, LLMProvider, Message
 from app.core.masking import Vault
-from app.core.security import UserContext
+from app.auth.security import UserContext
 from app.core.audit import describe_result, safe_args
 from app.tools.registry import get_tool_specs, load_all_tools, run_tool, take_outcome
 
