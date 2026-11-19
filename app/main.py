@@ -27,6 +27,8 @@ from app.core.reports import get_report
 from app.core.credentials import Credentials, extract_credentials, use_credentials
 from app.core.security import AccessDenied, UserContext, build_context, resolve_context
 from app.core.media import get_picture
+from app.core import speech
+from starlette.concurrency import run_in_threadpool
 from app.registry import get_profile
 from app.registry.review import masking_review
 from app.tools.registry import load_all_tools
@@ -176,7 +178,8 @@ def trim(messages: list[Message]) -> list[Message]:
 PAGE_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; img-src 'self' data: blob:; "
                                "style-src 'self' 'unsafe-inline'; "
-                               "script-src 'self' 'unsafe-inline'",
+                               "script-src 'self' 'unsafe-inline'; media-src 'self' blob:",
+    "Permissions-Policy": "microphone=(self)",
     "X-Content-Type-Options": "nosniff",
 }
 
@@ -370,5 +373,63 @@ def show_picture(request: Request,
     if picture is None:
         raise HTTPException(status_code=404, detail="This picture is no longer available.")
     return Response(content=picture.data, media_type=picture.mime,
+                    headers={"Cache-Control": "private, no-store",
+                             "X-Content-Type-Options": "nosniff"})
+
+
+# ---------- speech ----------
+
+class TtsRequest(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+def _speech_guard(ctx: UserContext) -> None:
+    if not settings.speech_enabled:
+        raise HTTPException(status_code=404)
+    try:
+        speech.check_rate(ctx.user_id)
+    except speech.SpeechRateLimited:
+        raise HTTPException(status_code=429,
+                            detail="Too many voice requests. Please wait a moment.")
+
+
+@app.get("/speech/config", include_in_schema=False)
+def speech_config():
+    return {"enabled": settings.speech_enabled}
+
+
+@app.post("/stt")
+async def stt(request: Request, lang: Literal["auto", "bn", "en"] = "auto",
+              ctx: UserContext = Depends(current_user)):
+    _speech_guard(ctx)
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > speech.MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="The recording is too large.")
+    data = await request.body()
+    if len(data) > speech.MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="The recording is too large.")
+    try:
+        text = await run_in_threadpool(speech.transcribe, data, lang)
+    except speech.SpeechInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except speech.SpeechError as exc:
+        log.error("STT failure for %s: %s", ctx.user_id, exc)
+        raise HTTPException(status_code=503, detail="Voice input is unavailable right now.")
+    log.info("user=%s stt bytes=%d chars=%d", ctx.user_id, len(data), len(text))
+    return {"text": text}
+
+
+@app.post("/tts")
+def tts(body: TtsRequest, ctx: UserContext = Depends(current_user)):
+    _speech_guard(ctx)
+    try:
+        audio = speech.synthesize(body.text)
+    except speech.SpeechInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except speech.SpeechError as exc:
+        log.error("TTS failure for %s: %s", ctx.user_id, exc)
+        raise HTTPException(status_code=503, detail="Voice output is unavailable right now.")
+    log.info("user=%s tts chars=%d bytes=%d", ctx.user_id, len(body.text), len(audio))
+    return Response(content=audio, media_type="audio/wav",
                     headers={"Cache-Control": "private, no-store",
                              "X-Content-Type-Options": "nosniff"})

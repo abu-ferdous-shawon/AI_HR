@@ -73,6 +73,9 @@
   textarea { flex: 1; resize: none; max-height: 140px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
   textarea:focus, select:focus, input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
   .composer button { padding: 10px 14px; border-radius: 12px; }
+  #mic.rec { background: #d93025; color: #fff; border-color: #d93025; }
+  #sttLang { padding: 8px 6px; }
+  .speakBtn { display: block; margin-top: 8px; font-size: 13px; padding: 4px 10px; }
 </style>
 </head>
 <body>
@@ -103,6 +106,10 @@
   <div id="thumbs" hidden></div>
   <div class="composer">
     <button id="attach" title="Attach images (max 3)">📎</button>
+    <button id="mic" title="Speak your question" hidden>🎤</button>
+    <select id="sttLang" title="Spoken language" hidden>
+      <option value="auto">Auto</option><option value="bn">বাংলা</option><option value="en">English</option>
+    </select>
     <input type="file" id="file" accept="image/*" multiple hidden>
     <textarea id="input" rows="1" maxlength="1000"
       placeholder="Type your question… (Enter to send, Shift+Enter for a new line)"></textarea>
@@ -177,7 +184,108 @@
     msgs.scrollTop = msgs.scrollHeight;
   }
 
+  // ---- voice: record -> 16 kHz WAV -> /stt ; answer -> /tts -> audio ----
+  let speechOn = false, rec = null, stream = null, chunks = [], autoStop = null, player = null;
+
+  function encodeWav(f32, rate) {
+    const buf = new ArrayBuffer(44 + f32.length * 2), v = new DataView(buf);
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); v.setUint32(4, 36 + f32.length * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true);
+    v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, f32.length * 2, true);
+    for (let i = 0; i < f32.length; i++) {
+      const s = Math.max(-1, Math.min(1, f32[i]));
+      v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return new Blob([buf], { type: 'audio/wav' });
+  }
+
+  async function toWav16k(blob) {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    let decoded;
+    try { decoded = await ctx.decodeAudioData(await blob.arrayBuffer()); } finally { ctx.close(); }
+    const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * 16000)), 16000);
+    const src = off.createBufferSource();
+    src.buffer = decoded; src.connect(off.destination); src.start();
+    return encodeWav((await off.startRendering()).getChannelData(0), 16000);
+  }
+
+  async function startRec() {
+    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
+    catch (e) { addMsg('error', 'The microphone is blocked or unavailable (it needs HTTPS or localhost).'); return; }
+    chunks = []; rec = new MediaRecorder(stream);
+    rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    rec.onstop = onRecStop;
+    rec.start();
+    $('mic').classList.add('rec'); $('mic').textContent = '⏹';
+    autoStop = setTimeout(stopRec, 55000);
+  }
+
+  function stopRec() {
+    clearTimeout(autoStop);
+    if (rec && rec.state !== 'inactive') rec.stop();
+    if (stream) stream.getTracks().forEach(t => t.stop());
+  }
+
+  async function onRecStop() {
+    $('mic').classList.remove('rec'); $('mic').textContent = '🎤';
+    const blob = new Blob(chunks, { type: rec.mimeType });
+    setBusy(true);
+    try {
+      const wav = await toWav16k(blob);
+      const res = await fetch('/stt?lang=' + encodeURIComponent($('sttLang').value), {
+        method: 'POST', headers: { 'Content-Type': 'audio/wav', ...authHeaders() }, body: wav });
+      let data = {};
+      try { data = await res.json(); } catch (e) {}
+      if (res.ok && data.text) { input.value = data.text; autosize(); }
+      else addMsg('error', typeof data.detail === 'string' ? data.detail : 'Voice input failed. Please try again.');
+    } catch (e) { addMsg('error', 'The recording could not be processed.'); }
+    setBusy(false);
+  }
+
+  function addSpeak(div, text) {
+    if (!speechOn) return;
+    const b = document.createElement('button');
+    b.className = 'speakBtn'; b.textContent = '🔊 Listen';
+    b.addEventListener('click', () => speak(b, text));
+    div.appendChild(b);
+  }
+
+  let playingBtn = null, speakToken = 0;
+
+  function stopSpeak() {
+    speakToken++;                                  // also cancels a request still loading
+    if (player) { player.pause(); player = null; }
+    if (playingBtn) { playingBtn.textContent = '🔊 Listen'; playingBtn = null; }
+  }
+
+  async function speak(btn, text) {
+    if (playingBtn === btn) { stopSpeak(); return; }   // second click = stop
+    stopSpeak();
+    const mine = speakToken;
+    playingBtn = btn; btn.textContent = '⏹ Stop';
+    try {
+      const res = await fetch('/tts', { method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        body: JSON.stringify({ text: text.slice(0, 2000) }) });
+      if (!res.ok) throw new Error('tts');
+      const blob = await res.blob();
+      if (mine !== speakToken) return;                 // stopped while loading
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      player = audio;
+      audio.onended = () => { URL.revokeObjectURL(url); if (player === audio) stopSpeak(); };
+      await audio.play();
+    } catch (e) {
+      if (mine === speakToken) { stopSpeak(); addMsg('error', 'Could not play the answer.'); }
+    }
+  }
+
+  $('mic').addEventListener('click', () => (rec && rec.state === 'recording') ? stopRec() : startRec());
+
   function resetChat() {
+    stopSpeak();
     convId = null; pending = []; renderThumbs();
     msgs.replaceChildren(hint);
     hint.hidden = false;
@@ -199,6 +307,7 @@
 
   function setBusy(on) {
     busy = on; sendBtn.disabled = on; input.disabled = on; $('attach').disabled = on;
+    $('mic').disabled = on;
     if (!on) input.focus();
   }
 
@@ -254,6 +363,7 @@
     if (!text || busy) return;
     if (!devMode && !token()) { refreshUi(); $('token').focus(); return; }
 
+    stopSpeak();
     const sending = pending;
     pending = []; renderThumbs();
     setBusy(true);
@@ -277,6 +387,7 @@
       if (res.ok) {
         convId = data.conversation_id;
         const div = addMsg('bot', data.answer);
+        addSpeak(div, data.answer);
         if (data.files && data.files.length) addFiles(div, data.files);
         if (data.pictures && data.pictures.length) showPictures(div, data.pictures);        
       } else if (res.status === 401) {
@@ -331,6 +442,10 @@
 
   async function init() {
     try { devMode = !!(await (await fetch('/config')).json()).dev; } catch (e) {}
+    try {
+      speechOn = !!(await (await fetch('/speech/config')).json()).enabled;
+      $('mic').hidden = !speechOn; $('sttLang').hidden = !speechOn;
+    } catch (e) {}
     if (devMode) {
       try {
         const list = await (await fetch('/dev/employees')).json();

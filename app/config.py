@@ -36,6 +36,23 @@ class Settings(BaseSettings):
     # Employee IDs (comma separated) who always count as HR, whatever their roles.
     # HR role names themselves are set in the registry profile (access.hr_roles).
     hr_admin_employees: str = ""
+    # Speech (off by default; needs requirements-speech.txt)
+    speech_enabled: bool = False
+    speech_device: str = "auto"                 # auto, cpu, cuda:0
+    stt_model: str = "openai/whisper-large-v3"
+    tts_provider: str = "indic_parler"          # indic_parler or mms
+    tts_model: str = "ai4bharat/indic-parler-tts"
+    tts_model_bn: str = "Tanmoyshome/bn-parler-tts"     # Bangladeshi Bangla
+    tts_model_en: str = "ai4bharat/indic-parler-tts"    # English
+    tts_seed: int = 0  
+    tts_voice_bn: str = ("Aditi speaks in a clear, moderate-paced voice with a very "
+                         "clear recording and no background noise.")
+    tts_voice_en: str = ("A female speaker delivers clear, moderate-paced English speech "
+                         "with a very clear recording and no background noise.")
+    tts_transliterate_banglish: bool = True
+    tts_max_chars: int = 800
+    speech_max_concurrent: int = 1
+    speech_rate_per_minute: int = 20
 
     # How the ERP is called for a person's data:
     #   user_session    as the logged-in person, so the ERP enforces their own roles,
