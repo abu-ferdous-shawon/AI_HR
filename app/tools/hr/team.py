@@ -1,4 +1,4 @@
-from app.core.security import UserContext, get_team
+from app.auth.security import UserContext, get_team
 from app.tools.registry import tool
 
 

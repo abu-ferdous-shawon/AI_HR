@@ -17,21 +17,22 @@ from pydantic import BaseModel, Field
 
 from app.config import settings
 from app.core.agent import run_agent
-from app.core.auth import identify_user
-from app.core.frappe_client import FrappeError, get_frappe_client
+from app.auth.frappe_session import identify_user
+from app.frappe_client.client import FrappeError, enforce_user_login, get_frappe_client
 from app.core.llm.base import ImageData, LLMBusy, LLMError, Message
 from app.core.masking import Vault
-from app.core import audit, gateway
+from app.core import audit, gateway, sites
 from app.core.hardening import OriginGuard, assert_safe_config, docs_settings, parse_origins
 from app.core.reports import get_report
-from app.core.credentials import Credentials, extract_credentials, use_credentials
-from app.core.security import AccessDenied, UserContext, build_context, resolve_context
+from app.auth.credentials import Credentials, extract_credentials, use_credentials
+from app.auth.security import AccessDenied, UserContext, build_context, resolve_context
 from app.core.media import get_picture
 from app.core import speech
 from starlette.concurrency import run_in_threadpool
 from app.registry import get_profile
 from app.registry.review import masking_review
 from app.tools.registry import load_all_tools
+from app.core.secret_store import PLAINTEXT_SEEN
 
 for noisy in ("httpx", "httpcore", "urllib3", "google_genai"):
     logging.getLogger(noisy).setLevel(logging.WARNING)
@@ -41,7 +42,18 @@ log = logging.getLogger("hr_ai.api")
 async def lifespan(_app):
     audit.setup_app_logging()
     audit.configure()
+    for site in sites.get_sites().values():      # a bad sites file stops startup here
+        log.info("site %s -> %s (hosts: %s)", site.name, site.frappe_url,
+                 ", ".join(site.hosts) or "any")
+    if PLAINTEXT_SEEN:
+        names = ", ".join(sorted(PLAINTEXT_SEEN))
+        if settings.require_encrypted_secrets:
+            raise RuntimeError("REQUIRE_ENCRYPTED_SECRETS is on, but these secrets are "
+                               f"plain text: {names}")
+        if settings.environment.strip().lower() == "production":
+            log.warning("These secrets are stored as plain text: %s", names)
     load_all_tools()                      # a bad profile or tool stops startup here
+    enforce_user_login(settings.frappe_auth_mode == "user_session")
     for problem in masking_review(get_profile()):
         log.warning("profile review: %s", problem)
     yield
@@ -52,13 +64,22 @@ _ORIGINS = parse_origins(settings.allowed_origins)
 assert_safe_config(settings.environment, settings.dev_mode, _ORIGINS)   # refuse unsafe start
 app = FastAPI(title="HR AI Backend", lifespan=lifespan, **docs_settings(settings.environment))
 gateway.install(app)
+@app.middleware("http")
+async def choose_site(request: Request, call_next):
+    """The Host header picks the site. Unknown hosts get the default site."""
+    with sites.use_site(sites.site_for_host(request.headers.get("host")).name):
+        return await call_next(request)
+
+
 app.add_middleware(OriginGuard, allowed=_ORIGINS)
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 if settings.dev_mode:
     log.warning("DEV_MODE is ON: browsers on this machine can chat as any "
                 "active employee. Never use this on a shared server.")
-log.info("ERP access mode: %s", settings.frappe_auth_mode)
+    audit.setup_app_logging()
+    audit.configure()
+    log.info("ERP access mode: %s", settings.frappe_auth_mode)
 if settings.dev_mode and settings.frappe_auth_mode == "user_session":
     log.warning("Dev-mode requests have no login of their own, so they read data "
                 "with the service account.")
@@ -103,9 +124,10 @@ def current_user(request: Request,
     # Testing shortcut (see above). Skipped unless dev mode is active.
     if x_dev_employee and _dev_active(request):
         try:
-            rows = get_frappe_client().get_list(
-                "Employee", ["name"],
-                filters={"name": x_dev_employee, "status": "Active"}, limit=1)
+            with use_credentials(None):      # dev shortcut: the service account, on purpose
+                rows = get_frappe_client().get_list(
+                    "Employee", ["name"],
+                    filters={"name": x_dev_employee, "status": "Active"}, limit=1)
         except FrappeError as exc:
             log.warning("Dev employee lookup failed: %s", exc)
             raise HTTPException(status_code=503, detail="The HR system is not reachable right now.")
@@ -163,7 +185,7 @@ def _is_dev(ctx: UserContext) -> bool:
 
 MAX_CONVERSATIONS = 500   # oldest are dropped beyond this
 KEEP_USER_TURNS = 6       # how many recent questions the model remembers
-_store: OrderedDict[tuple[str, str], tuple[list[Message], Vault]] = OrderedDict()
+_store: OrderedDict[tuple[str, str, str], tuple[list[Message], Vault]] = OrderedDict()
 _lock = Lock()
 
 
@@ -206,8 +228,9 @@ def dev_employees(request: Request):
     if not _dev_active(request):
         raise HTTPException(status_code=404)
     try:
-        rows = get_frappe_client().get_list(
-            "Employee", ["name", "employee_name"], filters={"status": "Active"}, limit=100)
+        with use_credentials(None):
+            rows = get_frappe_client().get_list(
+                "Employee", ["name", "employee_name"], filters={"status": "Active"}, limit=100)
     except FrappeError as exc:
         log.warning("Dev employee list failed: %s", exc)
         raise HTTPException(status_code=503, detail="The HR system is not reachable right now.")
@@ -291,7 +314,8 @@ def _audit_chat(request: Request, ctx: UserContext, cid: str, body: ChatRequest,
     """One audit line per chat. The message text itself is never logged."""
     audit.record(
         "chat", request_id=getattr(request.state, "request_id", "-"),
-        ip=gateway.client_ip(request), user=ctx.user_id, employee=ctx.employee_id,
+        ip=gateway.client_ip(request), site=sites.current_site().name,
+        user=ctx.user_id, employee=ctx.employee_id,
         roles=list(ctx.roles), role_source=ctx.role_source, conversation=cid,
         status=status, duration_ms=round((time.monotonic() - started) * 1000),
         message_chars=len(body.message), images=image_count,
@@ -322,7 +346,7 @@ def chat(request: Request, body: ChatRequest, ctx: UserContext = Depends(current
         _audit_chat(request, ctx, cid, body, len(body.images),
                     f"rejected_{exc.status_code}", started)
         raise
-    key = (ctx.user_id, cid)  # tied to the user, so IDs cannot be borrowed
+    key = (sites.current_site().name, ctx.user_id, cid)  # tied to site and user  # tied to the user, so IDs cannot be borrowed
 
     with _lock:
         saved = _store.get(key)

@@ -1,10 +1,11 @@
 import re
 from dataclasses import dataclass
 
-from app.core.frappe_client import get_service_client
-from app.core.security import (
+from app.frappe_client.client import get_service_client
+from app.auth.security import (
     AccessDenied, ToolInputError, UserContext, get_team, has_role, is_hr_admin,
 )
+from app.frappe_client.service_purpose import for_purpose, service_purpose
 from app.registry.models import Profile, RecordType, norm
 
 SCOPES = ("self", "team", "company")
@@ -50,6 +51,7 @@ def _one(matches: list[dict], text: str) -> dict:
                          "Ask which one is meant, and use the full name or the ID.")
 
 
+@for_purpose("employee_search")
 def _find_employee(profile: Profile, text: str) -> list[dict]:
     """Name search for HR. A lookup of structure, so it uses the key."""
     cfg, client = profile.employee, get_service_client()
@@ -80,7 +82,11 @@ def resolve_access(ctx: UserContext, profile: Profile, rt: RecordType,
         raise AccessDenied(f"{rt.label} are not available at the '{level}' level. "
                            f"Available: {', '.join(rt.scopes)}.")
     text = _clean_name(employee) if employee and str(employee).strip() else None
-
+    if text:
+        cfg = profile.employee
+        with service_purpose("identity"):
+            own = get_service_client().get_list(
+                cfg.doctype, [cfg.name_field], filters={"name": ctx.employee_id}, limit=1)
     if level == "self":
         if text:
             cfg = profile.employee

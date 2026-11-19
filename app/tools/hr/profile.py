@@ -1,5 +1,5 @@
-from app.core.frappe_client import FrappeError, get_frappe_client
-from app.core.security import AccessDenied, UserContext
+from app.frappe_client.client import FrappeError, get_frappe_client
+from app.auth.security import AccessDenied, UserContext
 from app.tools.registry import tool
 
 # Technical fields nobody needs in a chat. Add a field name here to hide it

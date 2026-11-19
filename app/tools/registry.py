@@ -5,8 +5,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from app.core.frappe_client import FrappeError
-from app.core.security import AccessDenied, ToolInputError, UserContext, is_hr_admin, scrub
+from app.frappe_client.client import FrappeError
+from app.auth.security import AccessDenied, ToolInputError, UserContext, is_hr_admin, scrub
 
 log = logging.getLogger("hr_ai.tools")
 

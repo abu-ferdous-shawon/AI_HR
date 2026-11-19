@@ -15,3 +15,5 @@ fields.txt
 context_pack.txt
 policies
 .vscode
+secrets/
+*.key

@@ -2,8 +2,8 @@ import calendar
 import datetime
 from collections import Counter, defaultdict
 
-from app.core.frappe_client import get_frappe_client
-from app.core.security import ToolInputError, UserContext
+from app.frappe_client.client import get_frappe_client
+from app.auth.security import ToolInputError, UserContext
 from app.tools.common import resolve_range, to_int
 from app.tools.registry import tool
 

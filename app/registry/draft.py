@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 
 from app.config import settings
-from app.core.frappe_client import FrappeError, get_service_client
+from app.frappe_client.client import FrappeError, get_service_client
 from app.registry.loader import (
     RegistryError, extends_reference, load_profile, load_with_overlay,
 )

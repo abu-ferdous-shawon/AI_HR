@@ -3,9 +3,9 @@ from collections import defaultdict
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 
-from app.core.frappe_client import FrappeError, get_frappe_client
+from app.frappe_client.client import FrappeError, get_frappe_client
 from app.core.masking import is_confidential
-from app.core.security import AccessDenied, ToolInputError, UserContext
+from app.auth.security import AccessDenied, ToolInputError, UserContext
 from app.records.scope import Access, resolve_access
 from app.registry import Profile, RecordType, get_profile
 from app.registry.models import norm

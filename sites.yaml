@@ -1,0 +1,20 @@
+# Set SITES_FILE=sites.yaml to enable this configuration.
+# Use one host name per Frappe site and set the referenced variables in .env.
+default: main
+sites:
+  main:
+    hosts: [localhost]
+    frappe_url: http://127.0.0.1:8000
+    api_key_env: FRAPPE_MAIN_API_KEY
+    api_secret_env: FRAPPE_MAIN_API_SECRET
+    llm_provider: gemini
+    llm_model: gemini-2.5-flash
+    embedding_provider: gemini
+    embedding_model: gemini-embedding-001
+    knowledge_packs: [hrms_core, erpnext_core]
+    indexing_schedule: manual
+  second:
+    hosts: [127.0.0.1]
+    frappe_url: http://127.0.0.1:8001
+    api_key_env: FRAPPE_SECOND_API_KEY
+    api_secret_env: FRAPPE_SECOND_API_SECRET

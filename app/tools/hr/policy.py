@@ -2,7 +2,7 @@ from pathlib import Path
 
 from app.config import settings
 from app.core.policy_index import PolicyIndex
-from app.core.security import ToolInputError, UserContext
+from app.auth.security import ToolInputError, UserContext
 from app.tools.registry import tool
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
