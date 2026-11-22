@@ -210,8 +210,8 @@ file is named `<name>.yaml` and declares `pack_name: <name>`. See
 exclusions you want to include. Use `index_exclude_doctypes` for site-specific
 exclusions. The environment equivalents accept comma-separated names.
 
-The chat UI still uses the existing tools. Phase 4 connects the indexes to
-chat retrieval.
+Phase 4 uses a compatible local snapshot for permission-scoped chat retrieval.
+The sync command remains an indexing-account operation.
 
 ## Phase 3 knowledge packs
 
@@ -221,7 +221,7 @@ a custom app. Copy it into your pack directory, change `pack_name` to
 match the filename, and replace the sample modules, DocTypes and fields.
 Packs can define business flows and topics, status and ownership fields,
 `never_send` rules, vocabulary and KPIs, recommended reports, master hints,
-and worked examples. Phase 4 uses the domain guidance during retrieval.
+and worked examples. The Phase 4 read path uses matching rules and guidance during retrieval.
 
 Select enabled packs with `KNOWLEDGE_PACKS` for a single-site setup or
 `knowledge_packs` in the site's YAML. Set `KNOWLEDGE_PACK_DIR` to the folder
@@ -297,4 +297,58 @@ Run the focused regression tests locally with:
 
 ```bash
 .venv/bin/python -m pytest -q tests/test_knowledge_packs.py tests/test_metadata_index.py
+```
+
+## Phase 4 permission-scoped chat reads
+
+The local chat backend loads a compatible index for its configured site and
+embedding provider. Sync metadata first with your dedicated indexing account.
+Start chat in a different terminal with the usual chat configuration from
+`.env`. Use a regular user's own Frappe token in the browser. The universal
+tools require that signed-in user's credentials, so the existing dev employee
+picker is suitable for legacy HR tools only.
+
+For the single site tested in Phase 2 and the pack tested in Phase 3, use:
+
+```bash
+cd ~/ai_backend
+export EMBEDDING_PROVIDER=local
+export METADATA_INDEX_DIR=metadata_indexes/local-test
+export KNOWLEDGE_PACK_DIR="$PWD/metadata_indexes/local-test/phase3-packs"
+export KNOWLEDGE_PACKS=hrms_core,erpnext_core,phase3_local
+
+DEV_MODE=false FRAPPE_AUTH_MODE=user_session .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8100
+```
+
+Use the same pack and embedding settings that built your snapshot. If your site
+uses the default packs, omit the two pack exports. With a multi-site setup,
+open the hostname for that site and use the embedding provider and active packs
+from the site's YAML.
+
+Open `http://localhost:8100/` and run these checks:
+
+| Check | Example message | Pass condition |
+| --- | --- | --- |
+| Fast path | Hello | Chat replies without a record, report, or metadata lookup after authentication. |
+| Record list | List the latest five submitted Sales Invoices with posting date and grand total. | The invoices and amounts match what the signed-in account can see in Frappe Desk. Use an equivalent populated DocType if Sales Invoice is unavailable on your site. |
+| Follow-up | What about last month? | The same conversation keeps the invoice topic and switches to the previous calendar month. |
+| Record details | Show Sales Invoice `<an ID visible to this user>`. | The response uses that exact record. Fields and child rows are limited to Frappe's permissions and the active exclusion rules. |
+| Aggregation | Count Sales Invoices by docstatus for this month. | Each returned count matches the same filters in Frappe Desk. |
+| Named report | Run Monthly Attendance Sheet for October 2026 for `<company>`. | The report executes under the signed-in user's permissions. Chat can ask for required filter values. Compare against the report with the same filters in Frappe Desk. |
+| Access and redaction | Ask for a record this account cannot read, or ask for the Phase Three Private Note. | Chat gives no restricted record or excluded value. |
+| Write routing | Cancel Sales Invoice `<ID>`. | Chat explains that changes require confirmation. Use Frappe Desk to confirm the invoice status. |
+
+Use your locally configured audit log to see which tool executed. The new tool
+names are `search_schema`, `query_records`, `get_record_detail`,
+`aggregate_records`, and `run_frappe_report`. The existing HR tools continue to
+handle personal profile, payroll, policy, pictures, and downloadable HR
+exports. For a missing or stale snapshot, reconcile the site, active packs and
+embedding settings, then run `sync_metadata` in the indexing terminal.
+
+The read path only exposes fields it can verify in a current response from
+Frappe. On an empty list it can verify the DocType and keep the ID field in
+the schema. Use a populated DocType for field and aggregation checks.
+
+```bash
+.venv/bin/python -m pytest -q tests/test_phase4_reads.py tests/test_metadata_index.py tests/test_knowledge_packs.py
 ```

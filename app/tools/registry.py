@@ -4,6 +4,7 @@ import pkgutil
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, Callable
+from pydantic import BaseModel, ValidationError
 
 from app.frappe_client.client import FrappeError
 from app.auth.security import AccessDenied, ToolInputError, UserContext, is_hr_admin, scrub
@@ -22,6 +23,7 @@ class Tool:
     func: Callable[..., Any]
     allow: frozenset = frozenset()   # confidential fields it may return ("*" = all; the agent masks them)
     hr_only: bool = False            # only HR may use it; enforced in run_tool
+    input_model: type[BaseModel] | None = None
 
 
 _TOOLS: dict[str, Tool] = {}
@@ -38,15 +40,17 @@ def take_outcome() -> str | None:
 
 
 def tool(name: str, description: str, parameters: dict | None = None,
-         allow: tuple[str, ...] = (), hr_only: bool = False):
+         allow: tuple[str, ...] = (), hr_only: bool = False, *,
+         input_model: type[BaseModel] | None = None):
     """Decorator that adds a function to the list of approved tools."""
     def decorator(func):
         if name in _TOOLS:
             raise ValueError(f"Tool '{name}' is registered twice.")
         _TOOLS[name] = Tool(
             name, description,
-            parameters or {"type": "object", "properties": {}}, func,
-            frozenset(allow), hr_only,
+            input_model.model_json_schema() if input_model else
+            (parameters or {"type": "object", "properties": {}}), func,
+            frozenset(allow), hr_only, input_model,
         )
         return func
     return decorator
@@ -65,11 +69,12 @@ def load_all_tools() -> None:
         )
 
 
-def get_tool_specs() -> list[dict]:
+def get_tool_specs(*, include_contextual: bool = False) -> list[dict]:
     """What we show the model: names, descriptions and inputs only."""
     return [
-        {"name": t.name, "description": t.description, "parameters": t.parameters}
-        for t in _TOOLS.values()
+        {"name": t.name, "description": t.description, "parameters": t.parameters,
+         **({"json_schema": True} if t.input_model else {})}
+        for t in _TOOLS.values() if include_contextual or t.input_model is None
     ]
 
 
@@ -88,7 +93,12 @@ def run_tool(name: str, args: dict | None, ctx: UserContext) -> dict:
         if selected.hr_only and not is_hr_admin(ctx):
             _outcome.set("denied")
             return {"error": HR_ONLY_MESSAGE}
-        value = current_policy().sanitize(selected.func(ctx, **clean))
+        if selected.input_model is not None:
+            arguments = selected.input_model.model_validate(args or {}, strict=True)
+            value = selected.func(ctx, arguments)
+        else:
+            value = selected.func(ctx, **clean)
+        value = current_policy().sanitize(value)
         value = scrub(value, selected.allow)
         _outcome.set("ok")
         return {"result": value}
@@ -98,7 +108,21 @@ def run_tool(name: str, args: dict | None, ctx: UserContext) -> dict:
     except ToolInputError as exc:
         _outcome.set("invalid")
         return {"error": str(exc)}
+    except ValidationError as exc:
+        _outcome.set("invalid")
+        fields = ", ".join(dict.fromkeys(
+            str(error["loc"][0]) for error in exc.errors(include_input=False)
+            if error["loc"] and error["loc"][0] in allowed
+        ))
+        return {"error": f"Invalid tool arguments. Check the input schema for: {fields or 'the request'}."}
     except FrappeError as exc:
+        if selected.input_model is not None:
+            if exc.status_code in (401, 403):
+                _outcome.set("denied")
+                return {"error": "Frappe denied access to that record or report."}
+            if exc.status_code in (400, 404, 417, 422):
+                _outcome.set("invalid")
+                return {"error": "Frappe rejected the request. Check the record ID, fields, and filters."}
         _outcome.set("failed")
         log.warning("Frappe error in %s (HTTP %s)", name, exc.status_code)
         return {"error": "The HR system could not complete this request."}

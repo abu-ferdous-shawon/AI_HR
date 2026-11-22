@@ -149,10 +149,12 @@ class FrappeClient:
 
     def get_list(self, doctype: str, fields: list[str] | None = None,
                  filters: dict | list | None = None, order_by: str | None = None,
-                 limit: int = 20, start: int = 0) -> list[dict[str, Any]]:
+                 limit: int = 20, start: int = 0, *,
+                 or_filters: dict | list | None = None) -> list[dict[str, Any]]:
         """Fetch several records, e.g. get_list('Leave Type', ['name'])."""
         policy = current_policy()
         self._check_query_fields(policy, doctype, filters, order_by)
+        self._check_query_fields(policy, doctype, or_filters, None)
         projection = self._list_fields(doctype, fields, policy)
         params: dict[str, Any] = {
             "fields": json.dumps(projection),
@@ -161,6 +163,8 @@ class FrappeClient:
         }
         if filters:
             params["filters"] = json.dumps(filters)
+        if or_filters:
+            params["or_filters"] = json.dumps(or_filters)
         if order_by:
             params["order_by"] = order_by
 
@@ -194,6 +198,30 @@ class FrappeClient:
         if include is not None:
             doc = {field: value for field, value in doc.items() if field in include}
         return policy.sanitize(doc, doctype, document=True)
+
+    def get_aggregate(self, doctype: str, function: str, aggregate_field: str, *,
+                      group_by: str | None = None, filters: list | None = None,
+                      limit: int = 51) -> list[dict]:
+        """Use Frappe's structured ORM functions with the same permission checks as get_list."""
+        if function not in {"count", "sum", "avg", "min", "max"}:
+            raise FrappeError(400, "unsupported aggregation")
+        policy = current_policy()
+        columns = [aggregate_field] + ([group_by] if group_by else [])
+        if any(not FIELD_NAME.fullmatch(column) for column in columns):
+            raise FrappeError(400, "aggregation fields must be simple field names")
+        if policy.project(columns, doctype) != columns:
+            raise FrappeError(403, "an aggregation field is unavailable")
+        self._check_query_fields(policy, doctype, filters, group_by)
+        fields = ([group_by] if group_by else []) + [{function.upper(): aggregate_field, "as": "_metric"}]
+        params: dict[str, Any] = {
+            "fields": json.dumps(fields), "limit_page_length": min(limit, MAX_LIMIT),
+        }
+        if filters:
+            params["filters"] = json.dumps(filters)
+        if group_by:
+            params.update(group_by=group_by, order_by=f"{group_by} asc")
+        rows = self._get(f"/api/resource/{quote(doctype)}", params).get("data", [])
+        return policy.sanitize(rows, doctype)
 
     def call_method(self, method_path: str, params: dict | None = None) -> Any:
         """Call a whitelisted Frappe function, e.g. frappe.auth.get_logged_user."""

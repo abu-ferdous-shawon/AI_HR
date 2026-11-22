@@ -1,6 +1,7 @@
 import logging
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
@@ -9,6 +10,7 @@ from app.config import Settings
 from app.core import frappe_client
 from app.core.agent import AgentResult
 from app.core.security import UserContext
+from app.frappe_client.client import FrappeError
 
 REAL = UserContext("ann@x.com", "HR-EMP-00001", ("Employee",), "session")
 DEV = UserContext("dev:HR-EMP-00001", "HR-EMP-00001")
@@ -112,6 +114,28 @@ def test_the_login_check_hands_the_credentials_to_the_role_lookup(monkeypatch):
     monkeypatch.setattr(main, "resolve_context", fake_resolve)
     ctx = main.current_user(None, "token abc:def", None, None)
     assert ctx is REAL and got["credentials"].headers() == {"Authorization": "token abc:def"}
+
+
+@pytest.mark.parametrize(("status", "reason"), [
+    (401, "integration_login_rejected"),
+    (403, "integration_employee_read_denied"),
+])
+def test_employee_lookup_distinguishes_integration_failures(monkeypatch, caplog, status, reason):
+    monkeypatch.setattr(main, "identify_user", lambda authorization, cookie: REAL.user_id)
+    recorded = []
+    monkeypatch.setattr(main, "_auth_audit", lambda request, ip, code, kind: recorded.append((code, kind)))
+
+    def failed_lookup(user_id, credentials):
+        raise FrappeError(status, "request failed")
+
+    monkeypatch.setattr(main, "resolve_context", failed_lookup)
+    with pytest.raises(HTTPException) as caught:
+        main.current_user(None, "token test:only", None, None)
+    assert caught.value.status_code == 503
+    assert "The HR integration" in caught.value.detail
+    assert recorded == [(503, reason)]
+    assert "backend integration" in caplog.text
+    assert "test:only" not in caplog.text
 
 
 def test_the_dev_shortcut_resolves_roles_without_credentials(monkeypatch):

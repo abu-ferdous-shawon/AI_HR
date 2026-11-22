@@ -8,6 +8,7 @@ from app.core.llm import get_llm
 from app.core.llm.base import ImageData, LLMProvider, Message
 from app.core.masking import Vault
 from app.auth.security import UserContext
+from app.agent.intent_router import localized
 from app.core.audit import describe_result, safe_args
 from app.tools.registry import get_tool_specs, load_all_tools, run_tool, take_outcome
 
@@ -76,14 +77,19 @@ def run_agent(question: str, ctx: UserContext,
               history: list[Message] | None = None,
               llm: LLMProvider | None = None,
               vault: Vault | None = None,
-              images: list[ImageData] | None = None) -> AgentResult:
+              images: list[ImageData] | None = None, *,
+              guidance: str = "", allowed_tools: frozenset[str] | None = None,
+              contextual_tools: frozenset[str] = frozenset()) -> AgentResult:
     llm = llm or get_llm()
     vault = vault if vault is not None else Vault()
     if not get_tool_specs():
         load_all_tools()
 
     hint = language_hint(question)   # decided from the letters, not left to the model
-    tools = get_tool_specs()
+    tools = get_tool_specs(include_contextual=True) if contextual_tools else get_tool_specs()
+    if allowed_tools is not None:
+        tools = [spec for spec in tools if spec["name"] in allowed_tools]
+    exposed = {spec["name"] for spec in tools}
     # Phone numbers, emails and long ID numbers the person typed are masked too.
     # The conversation keeps the masked text, so they never reach the model later either.
     typed = vault.mask_typed(question)
@@ -93,9 +99,12 @@ def run_agent(question: str, ctx: UserContext,
     pictures: list[dict] = []
     retried = False
     rejected_at: int | None = None   # where a rejected answer and its note sit in messages
+    query_retries = 0
 
     for _ in range(MAX_STEPS):
         system = build_system_prompt(vault, hint)   # rebuilt each round: placeholders may exist now
+        if guidance:
+            system += "\n\n" + guidance
         reply = llm.generate(system, messages, tools)
 
         if not reply.tool_calls:  # the model answered in words
@@ -122,12 +131,16 @@ def run_agent(question: str, ctx: UserContext,
 
         messages.append(Message("assistant", text=reply.text,
                                 tool_calls=reply.tool_calls, raw=reply.raw))
+        stop = None
         for call in reply.tool_calls:
             args, secret, result, kind = call.args, False, None, None
 
+            if stop or (allowed_tools is not None and call.name not in exposed):
+                result, kind = {"error": "This tool is unavailable for the current request."}, "denied"
+
             # A calculation may contain placeholders. The real numbers are filled in
             # HERE, on the server, and the answer is hidden behind a new placeholder.
-            if call.name == "calculate" and isinstance((call.args or {}).get("expression"), str):
+            if result is None and call.name == "calculate" and isinstance((call.args or {}).get("expression"), str):
                 try:
                     expression, secret = vault.reveal_numbers(call.args["expression"])
                     args = {**call.args, "expression": expression}
@@ -139,6 +152,15 @@ def run_agent(question: str, ctx: UserContext,
                 result = run_tool(call.name, args, ctx)  # security lives here
                 kind = take_outcome()
 
+            if call.name in contextual_tools and not stop:
+                if kind == "denied":
+                    stop = "scope"
+                elif kind == "invalid":
+                    if query_retries >= 2:
+                        stop = "retry"
+                    else:
+                        query_retries += 1
+                        result["error"] += " Correct the request using the verified schema or ask for a missing filter."
             ok = "error" not in result
             kind = kind or ("ok" if ok else "failed")
             payload = result.get("result")
@@ -159,6 +181,11 @@ def run_agent(question: str, ctx: UserContext,
             # Masking happens HERE, for every tool, before the model sees anything.
             messages.append(Message("tool", tool_name=call.name,
                                     tool_result=vault.mask(result)))
+        if stop:
+            answer = localized(stop, question)
+            messages.append(Message("assistant", text=answer))
+            _tidy(messages, rejected_at)
+            return AgentResult(answer, messages, tool_log, vault, files, pictures)
 
     _tidy(messages, rejected_at)
     return AgentResult(FALLBACK, messages, tool_log, vault, files, pictures)

@@ -16,7 +16,7 @@ from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.core.agent import run_agent
+from app.agent.orchestrator import run_agent
 from app.auth.frappe_session import identify_user
 from app.frappe_client.client import FrappeError, enforce_user_login, get_frappe_client
 from app.core.llm.base import ImageData, LLMBusy, LLMError, Message
@@ -140,7 +140,6 @@ def current_user(request: Request,
         return build_context(f"dev:{rows[0]['name']}", rows[0]["name"])
 
     # The real path: ask Frappe who these credentials belong to.
-    # The real path: ask Frappe who these credentials belong to.
     ip = gateway.client_ip(request) if request is not None else "unknown"
     wait = gateway.auth_failures.blocked(ip)
     if wait:
@@ -170,6 +169,15 @@ def current_user(request: Request,
         raise HTTPException(status_code=403, detail=str(exc))
     except FrappeError as exc:
         log.warning("Employee lookup failed: %s", exc)
+        if exc.status_code in (401, 403):
+            reason = "integration_login_rejected" if exc.status_code == 401 else "integration_employee_read_denied"
+            _auth_audit(request, ip, 503, reason)
+            log.warning("Verified browser login, but Frappe rejected the backend integration "
+                        "account's Employee lookup. Check the site credentials and permissions.")
+            raise HTTPException(
+                status_code=503,
+                detail="The HR integration could not verify your employee record. Please contact the administrator.",
+            ) from None
         _auth_audit(request, ip, 503, "erp_unreachable")
         raise HTTPException(status_code=503, detail="The HR system is not reachable right now.")
 

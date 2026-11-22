@@ -1,7 +1,7 @@
 """Build and inspect incremental metadata snapshots through the indexing service purpose."""
 import logging
 import shutil
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 
@@ -166,17 +166,23 @@ def index_status(site: SiteConfig) -> dict:
         return _report(active, _manifest(active, site), "ready")
 
 
-def search_metadata(site: SiteConfig, tier: str, query: str, limit: int,
-                    doctype: str | None = None) -> list[dict]:
+@contextmanager
+def open_snapshot(site: SiteConfig, packs):
     store = _store(site)
-    pack_hash = _pack_hash(load_packs(site.knowledge_packs, settings.knowledge_pack_dir))
     with store.lock("snapshot"):
         active = store.active()
         manifest = _manifest(active, site)
         if manifest["embedding"] != _embedding_key(site):
             raise IndexError("Embedding configuration changed. Run sync_metadata.")
-        if manifest.get("packs") != pack_hash:
+        if manifest.get("packs") != _pack_hash(packs):
             raise IndexError("Knowledge packs changed. Run sync_metadata before searching.")
+        yield active, manifest
+
+
+def search_metadata(site: SiteConfig, tier: str, query: str, limit: int,
+                    doctype: str | None = None) -> list[dict]:
+    packs = load_packs(site.knowledge_packs, settings.knowledge_pack_dir)
+    with open_snapshot(site, packs) as (active, _):
         cards, index = read_tier(active, tier)
         preferred_keys = []
         if tier in {"table_index", "schema_index"}:

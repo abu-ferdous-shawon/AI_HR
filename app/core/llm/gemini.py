@@ -74,7 +74,8 @@ class GeminiProvider(LLMProvider):
             spec = {"name": t["name"], "description": t["description"]}
             # Gemini dislikes an empty parameter list, so leave it out then.
             if t["parameters"].get("properties"):
-                spec["parameters"] = t["parameters"]
+                key = "parameters_json_schema" if t.get("json_schema") else "parameters"
+                spec[key] = t["parameters"]
             declarations.append(types.FunctionDeclaration(**spec))
         return [types.Tool(function_declarations=declarations)]
 
