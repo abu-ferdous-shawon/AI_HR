@@ -36,10 +36,14 @@ class Settings(BaseSettings):
     # Multi-site: a YAML file listing sites. Empty = ONE site built from the FRAPPE_* values above.
     sites_file: str = ""
 
-    # Embeddings and knowledge packs (used from Phase 2; defaults apply to every site)
+    # Metadata indexing (defaults apply to every site)
     embedding_provider: str = "gemini"
     embedding_model: str = "gemini-embedding-001"   # check it against your key, as with list_models.py
     knowledge_packs: str = "hrms_core,erpnext_core"  # comma separated pack names
+    knowledge_pack_dir: str = ""
+    metadata_index_dir: str = "metadata_indexes"
+    index_include_doctypes: str = ""
+    index_exclude_doctypes: str = ""
     # "manual" or "every:<hours>", for example every:24
     indexing_schedule: str = "manual"
 

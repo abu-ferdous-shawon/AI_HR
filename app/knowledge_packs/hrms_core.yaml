@@ -1,0 +1,17 @@
+pack_name: hrms_core
+version: "1.0"
+aliases:
+  pto: Leave Application
+  time off: Leave Application
+  leave request: Leave Application
+  payslip: Salary Slip
+  payslips: Salary Slip
+vocabulary:
+  on leave today: Leave Application with status approved
+  headcount: Employee count
+  attendance summary: Attendance
+never_send:
+  global_fields: [password, api_secret, auth_token, user_secret]
+  doctype_fields:
+    Employee: [bank_ac_no, iban, pan_number, ssn, passport_number, health_details]
+    Salary Slip: [bank_account_no]

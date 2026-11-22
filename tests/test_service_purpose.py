@@ -78,7 +78,7 @@ def test_the_real_lookups_declare_their_purpose(monkeypatch):
 # decision: it means that file only asks questions about structure.
 REVIEWED = {
     "frappe_client/client.py", "auth/security.py", "auth/roles.py",
-    "records/scope.py", "registry/probe.py", "registry/draft.py",
+    "indexer/sync.py", "records/scope.py", "registry/probe.py", "registry/draft.py",
 }
 
 

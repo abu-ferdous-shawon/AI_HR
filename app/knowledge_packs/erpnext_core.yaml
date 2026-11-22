@@ -1,0 +1,13 @@
+pack_name: erpnext_core
+version: "1.0"
+aliases:
+  customer invoice: Sales Invoice
+  customer invoices: Sales Invoice
+  supplier invoice: Purchase Invoice
+  vendor invoice: Purchase Invoice
+  sales quotation: Quotation
+  product: Item
+vocabulary:
+  receivables: Sales Invoice outstanding amounts
+  payables: Purchase Invoice outstanding amounts
+  sales pipeline: Quotation

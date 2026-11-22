@@ -44,6 +44,8 @@ class SiteConfig(BaseModel):
     embedding_model: str
     knowledge_packs: list[str] = Field(default_factory=list)
     indexing_schedule: str = "manual"
+    index_include_doctypes: list[str] = Field(default_factory=list)
+    index_exclude_doctypes: list[str] = Field(default_factory=list)
 
     @field_validator("name")
     @classmethod
@@ -109,6 +111,8 @@ def _global_defaults() -> dict:
         "embedding_model": settings.embedding_model,
         "knowledge_packs": [p.strip() for p in settings.knowledge_packs.split(",") if p.strip()],
         "indexing_schedule": settings.indexing_schedule,
+        "index_include_doctypes": [d.strip() for d in settings.index_include_doctypes.split(",") if d.strip()],
+        "index_exclude_doctypes": [d.strip() for d in settings.index_exclude_doctypes.split(",") if d.strip()],
     }
 
 

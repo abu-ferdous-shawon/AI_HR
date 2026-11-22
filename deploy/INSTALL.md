@@ -118,9 +118,8 @@ For multiple sites, copy the structure in `sites.yaml` and set
 The browser's hostname chooses the site. Unlisted hostnames use the default
 site. Add the variables named by `api_key_env`, `api_secret_env` and optional
 `gemini_api_key_env` to the process environment or `.env`. Encrypt their
-values with `.venv/bin/python -m app.core.secret_store encrypt`. Site
-embedding, pack and schedule settings are consumed by the future indexing
-phase.
+values with `.venv/bin/python -m app.core.secret_store encrypt`. The metadata
+indexer uses the site's embedding, pack and schedule settings.
 
 ### Live permission isolation test
 
@@ -140,3 +139,77 @@ default. Then run:
 ```bash
 .venv/bin/python -m pytest -o addopts='' -m integration -rs tests/test_frappe_permission_isolation.py
 ```
+
+## Phase 2 metadata indexing
+
+The indexer runs as a local admin command. Run it from the repository root
+with access to the site's Frappe URL. The indexing account needs Frappe read
+access to `DocType`, `Module Def`, `Custom Field`, `Property Setter`, `Workflow`
+and `Report`. Its permissions on the report and referenced DocType also
+determine whether Frappe supplies the report's filter script. If you use a
+dedicated indexing credential, supply it only to the indexer process. For a
+single site, override `FRAPPE_API_KEY` and `FRAPPE_API_SECRET` in that process.
+For multiple sites, point the process at an indexing-only `SITES_FILE` with
+the appropriate encrypted credential references.
+
+### Build and inspect an index
+
+```bash
+.venv/bin/python -m pip install -r requirements.txt
+export EMBEDDING_PROVIDER=local
+.venv/bin/python -m app.indexer sync_metadata
+.venv/bin/python -m app.indexer status
+.venv/bin/python -m app.indexer search table_index "time off"
+.venv/bin/python -m app.indexer search schema_index "leave application" --limit 1
+.venv/bin/python -m app.indexer search field_index "status" --doctype "Leave Application" --limit 1
+.venv/bin/python -m app.indexer search report_index "monthly attendance sheet" --limit 1
+```
+
+Use names present on your Frappe site. With multiple sites, add
+`--site main` before the command and set `embedding_provider: local` in
+that site's YAML when it overrides the environment default. Keep the same
+embedding settings for sync and search. The local provider uses lexical
+similarity and makes no embedding API calls. For Gemini semantic search,
+use `embedding_provider: gemini`, the site's embedding model, and its
+configured Gemini key. A first sync embeds every card and can use significant
+Gemini quota on a large site.
+
+The `status` output shows the active snapshot directory and card counts.
+It contains four pairs of `.faiss` and `.json` files plus `alias_map.json`
+and `business_keywords.json`. Set `METADATA_INDEX_DIR` to change the output
+root. An empty tier has a zero card count. Report cards record whether
+filters came from the Report form, static JavaScript declarations, or
+were unavailable. Filters computed dynamically in JavaScript cannot be
+inferred statically.
+
+### Verify a change from the Frappe UI
+
+1. Run `sync_metadata --check` with the same site and embedding settings.
+   Expect `"state": "current"` and exit code 0 after a successful sync.
+2. In Frappe Desk on a test site, open **Customize Form**, pick a DocType,
+   and add a temporary Data field named **Phase Two Index Check**. Save it
+   and note the actual fieldname Frappe assigns.
+3. Run `sync_metadata --check` again. Expect `"state": "stale"` and exit code 1.
+   Run `sync_metadata` and check that `new_embeddings.field_index` is smaller
+   than the full index. Search `field_index` for `"Phase Two Index Check"`
+   scoped with `--doctype` to verify the new field.
+4. Repeat `sync_metadata` without editing metadata. Expect
+   `"state": "unchanged"`.
+
+For scheduled sync, set `INDEXING_SCHEDULE=every:1` or set the site's
+`indexing_schedule: every:1`, then run `.venv/bin/python -m app.indexer watch`
+as a separate process. It syncs on startup and every configured interval
+thereafter. `manual` sites are skipped by the watcher. After changing
+indexing permissions or only a report's JavaScript file, run
+`sync_metadata --force` to reread metadata even if revision hashes match.
+
+Add selected custom alias packs by setting `KNOWLEDGE_PACK_DIR` and listing
+their names in `KNOWLEDGE_PACKS` or the site's `knowledge_packs`. Each pack
+file is named `<name>.yaml` and declares `pack_name: <name>`. See
+`app/knowledge_packs/hrms_core.yaml` for the Phase 2 alias, vocabulary and
+field exclusion format. Use `index_include_doctypes` for specific built-in
+exclusions you want to include. Use `index_exclude_doctypes` for site-specific
+exclusions. The environment equivalents accept comma-separated names.
+
+The chat UI still uses the existing tools. Phase 4 connects the indexes to
+chat retrieval.
