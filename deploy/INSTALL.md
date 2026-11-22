@@ -206,10 +206,95 @@ indexing permissions or only a report's JavaScript file, run
 Add selected custom alias packs by setting `KNOWLEDGE_PACK_DIR` and listing
 their names in `KNOWLEDGE_PACKS` or the site's `knowledge_packs`. Each pack
 file is named `<name>.yaml` and declares `pack_name: <name>`. See
-`app/knowledge_packs/hrms_core.yaml` for the Phase 2 alias, vocabulary and
-field exclusion format. Use `index_include_doctypes` for specific built-in
+`app/knowledge_packs/hrms_core.yaml` for a complete pack. Use `index_include_doctypes` for specific built-in
 exclusions you want to include. Use `index_exclude_doctypes` for site-specific
 exclusions. The environment equivalents accept comma-separated names.
 
 The chat UI still uses the existing tools. Phase 4 connects the indexes to
 chat retrieval.
+
+## Phase 3 knowledge packs
+
+The default site loads `hrms_core` and `erpnext_core`. The
+`app/knowledge_packs/custom_app_example.yaml` starter shows how to describe
+a custom app. Copy it into your pack directory, change `pack_name` to
+match the filename, and replace the sample modules, DocTypes and fields.
+Packs can define business flows and topics, status and ownership fields,
+`never_send` rules, vocabulary and KPIs, recommended reports, master hints,
+and worked examples. Phase 4 uses the domain guidance during retrieval.
+
+Select enabled packs with `KNOWLEDGE_PACKS` for a single-site setup or
+`knowledge_packs` in the site's YAML. Set `KNOWLEDGE_PACK_DIR` to the folder
+with your custom files. Files in that folder take precedence over built-ins
+with the same name. Include the built-in pack names in the enabled list if
+you want their policies too. Restart the local backend after editing packs.
+Startup reports the enabled names and rejects malformed YAML, misspelled
+keys, or unavailable packs.
+
+`never_send.global_fields` applies across DocTypes.
+`never_send.doctype_fields` uses the exact DocType name and the underlying
+fieldnames. A document or report column that is excluded cannot be restored
+through the confidential-value masking feature. List requests omit blocked
+fields and reject filters and sorting on them. Frappe's document endpoint
+returns a permission-checked document, including child rows. The backend
+removes blocked keys immediately on receipt. Untyped tool and report data
+uses the combined exclusion list when a field's source is unknown.
+
+### Verify from a local workstation
+
+1. In Frappe Desk on a test site, open **Customize Form** for **Employee**.
+   Add a temporary Small Text field labeled **Phase Three Private Note**.
+   Use its actual fieldname in the YAML below. On the Employee record linked
+   to your regular chat user, save the harmless test value
+   `PHASE3-LOCAL-ONLY`.
+2. In a local shell at the repository root, create and select a test pack.
+
+   ```bash
+   export KNOWLEDGE_PACK_DIR="$(mktemp -d)"
+   export KNOWLEDGE_PACKS=hrms_core,erpnext_core,phase3_local
+   cat >"$KNOWLEDGE_PACK_DIR/phase3_local.yaml" <<'YAML'
+   pack_name: phase3_local
+   never_send:
+     doctype_fields:
+       Employee: [custom_phase_three_private_note]
+       Leave Application: [description]
+   YAML
+   ```
+
+   For multi-site setups, append `phase3_local` to the selected site's
+   `knowledge_packs` in `sites.yaml` and set `KNOWLEDGE_PACK_DIR` in both
+   terminal sessions.
+
+3. Start or restart the app locally with the usual chat credentials in
+   `.env`. The startup log should list `phase3_local`.
+
+   ```bash
+   DEV_MODE=false FRAPPE_AUTH_MODE=user_session .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8100
+   ```
+
+4. At `http://localhost:8100/`, sign in as the regular user linked to the
+   test Employee. Ask **Show my profile** and confirm ordinary profile
+   details still appear. Then ask **Show my Phase Three Private Note**.
+   Check the chat and the `/chat` response in your browser's Network tab
+   for the absence of `PHASE3-LOCAL-ONLY`. If the user has a leave application,
+   request a **leave history CSV** covering its date and confirm the Reason
+   column is absent because that export uses `Leave Application.description`.
+5. In the indexing terminal, set the same pack settings and use the
+   dedicated indexing credentials from Phase 2. Keep the same embedding
+   provider and index directory. Rebuild once, then inspect the Employee
+   schema card.
+
+   ```bash
+   .venv/bin/python -m app.indexer sync_metadata
+   .venv/bin/python -m app.indexer search schema_index Employee --limit 1
+   ```
+
+   Expect the Employee schema card to omit `custom_phase_three_private_note`.
+   A snapshot built under older pack rules must be synced before it can be
+   searched. Leave the indexing credentials in the indexing terminal.
+
+Run the focused regression tests locally with:
+
+```bash
+.venv/bin/python -m pytest -q tests/test_knowledge_packs.py tests/test_metadata_index.py
+```

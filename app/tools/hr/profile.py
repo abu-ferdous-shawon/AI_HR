@@ -49,7 +49,7 @@ def clean_rows(rows: list) -> list:
     description=(
         "Get the logged-in person's own complete profile: work details, "
         "personal and contact details, address, emergency contact, education "
-        "and qualifications, past work history, ID and bank details. Returns "
+        "and qualifications and past work history. Returns "
         "'details' (fields that have a value) and 'no_information_on_record' "
         "(fields that are empty). Only works for the person asking, never for "
         "anyone else."

@@ -85,6 +85,17 @@ REPORTS = {
     "attendance": _attendance, "leave_history": _leave_history,
     "leave_balance": _leave_balance, "holidays": _holidays, "payslips": _payslips,
 }
+REPORT_FIELDS = {
+    "attendance": ("Attendance", ("employee", "employee_name", "attendance_date", "status",
+                                  "leave_type", "late_entry", "early_exit")),
+    "leave_history": ("Leave Application", ("name", "leave_type", "from_date", "to_date",
+                                           "total_leave_days", "status", "posting_date", "description")),
+    "leave_balance": ("Leave Allocation", ("leave_type", "total_leaves", "leaves_taken",
+                                           "leaves_pending_approval", "remaining_leaves")),
+    "holidays": ("Holiday", ("holiday_date", "weekday", "description", "weekly_off")),
+    "payslips": ("Salary Slip", ("start_date", "end_date", "currency", "gross_pay",
+                               "total_deduction", "net_pay", "status")),
+}
 
 
 @tool(
@@ -130,5 +141,7 @@ def create_report(ctx: UserContext, report_type=None, file_format=None, scope=No
         "from_date": from_date, "to_date": to_date})
     if not rows:
         return {"message": "There are no records for that period, so no report was created."}
-    return {"file": save_report(ctx.user_id, title, columns, rows, fmt),
+    doctype, fields = REPORT_FIELDS[report_type]
+    return {"file": save_report(ctx.user_id, title, columns, rows, fmt,
+                                source_doctype=doctype, column_fields=fields),
             "message": f"Report '{title}' created with {len(rows)} rows."}

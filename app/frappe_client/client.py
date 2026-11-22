@@ -1,4 +1,5 @@
 import json
+import re
 from functools import lru_cache
 from typing import Any
 from urllib.parse import quote, unquote, urlparse
@@ -10,12 +11,21 @@ import requests
 from app.core.sites import current_site, get_sites
 from app.auth.credentials import Credentials, current_holder, service_account_chosen
 from app.core.media import sniff_image
+from app.knowledge_packs.redactor import NeverSendPolicy, current_policy
 
 log = logging.getLogger("hr_ai.service")
 
 # Safety cap: no single request may pull more than this many records.
 MAX_LIMIT = 200
 MAX_FILE_BYTES = 5 * 1024 * 1024   # largest picture we will download
+FIELD_NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
+ORDER_FIELD = re.compile(r"([A-Za-z_][A-Za-z_0-9]*)(?:\s+(?:asc|desc))?", re.IGNORECASE)
+STANDARD_COLUMNS = ("name", "owner", "creation", "modified", "modified_by", "docstatus", "idx")
+DISPLAY_FIELD_TYPES = frozenset({
+    "Section Break", "Column Break", "Tab Break", "HTML", "Fold", "Heading",
+    "Button", "Image", "Attachment Gallery", "Vue Component",
+})
+NON_COLUMN_TYPES = DISPLAY_FIELD_TYPES | {"Table", "Table MultiSelect", "Password"}
 
 
 class FrappeError(Exception):
@@ -81,29 +91,59 @@ class FrappeClient:
         try:
             response = self.session.get(url, params=params, timeout=self.timeout,
                                         allow_redirects=False)
-        except requests.RequestException as exc:
-            raise FrappeError(0, f"could not reach Frappe: {exc}") from exc
+        except requests.RequestException:
+            raise FrappeError(0, "could not reach Frappe") from None
 
         if 300 <= response.status_code < 400:   # usually the login page: the session ended
             raise FrappeError(401, "the HR system redirected the request "
                                    "(the login may have expired)")
         if response.status_code >= 400:
-            raise FrappeError(response.status_code, self._error_text(response))
+            # Error bodies can echo submitted values or a raw database error.
+            raise FrappeError(response.status_code, "request failed")
 
         try:
             return response.json()
         except ValueError as exc:
             raise FrappeError(response.status_code, "reply was not valid JSON") from exc
 
+    def _list_fields(self, doctype: str, fields: list[str] | None,
+                     policy: NeverSendPolicy) -> list[str]:
+        requested = list(fields or ["name"])
+        if "*" in requested:
+            meta = next((doc for doc in self.get_meta(doctype) if doc.get("name") == doctype), None)
+            if meta is None:
+                raise FrappeError(403, "could not resolve a safe field list")
+            requested = [field for field in requested if field != "*"] + list(STANDARD_COLUMNS)
+            requested.extend(
+                row["fieldname"] for row in meta.get("fields", [])
+                if row.get("fieldname") and row.get("fieldtype") not in NON_COLUMN_TYPES
+                and row.get("is_virtual") not in (True, 1, "1")
+            )
+        if any(not isinstance(field, str) or not FIELD_NAME.fullmatch(field) for field in requested):
+            raise FrappeError(400, "fields must be simple field names")
+        projected = policy.project(list(dict.fromkeys(requested)), doctype)
+        if not projected:
+            raise FrappeError(403, "no requested fields are available")
+        return projected
+
     @staticmethod
-    def _error_text(response: requests.Response) -> str:
-        """Pull a short, readable reason out of a Frappe error reply."""
-        try:
-            body = response.json()
-            text = body.get("exception") or body.get("_server_messages") or ""
-        except ValueError:
-            text = response.text
-        return str(text)[:300] or response.reason
+    def _check_query_fields(policy, doctype, filters, order_by) -> None:
+        if isinstance(filters, dict):
+            columns = [(doctype, name) for name in filters]
+        else:
+            columns = [(part[0], part[1]) if len(part) == 4 else (doctype, part[0])
+                       for part in (filters or []) if isinstance(part, (list, tuple)) and len(part) in (3, 4)]
+        if order_by:
+            for term in order_by.split(","):
+                match = ORDER_FIELD.fullmatch(term.strip())
+                if not match:
+                    raise FrappeError(400, "order_by must contain simple field names")
+                columns.append((doctype, match[1]))
+        for source, name in columns:
+            if not isinstance(source, str) or not isinstance(name, str) or not FIELD_NAME.fullmatch(name):
+                raise FrappeError(400, "filters must use simple field names")
+            if policy.blocked(name, source):
+                raise FrappeError(403, "a requested filter or sort field is unavailable")
 
     # ---------- public methods ----------
 
@@ -111,8 +151,11 @@ class FrappeClient:
                  filters: dict | list | None = None, order_by: str | None = None,
                  limit: int = 20, start: int = 0) -> list[dict[str, Any]]:
         """Fetch several records, e.g. get_list('Leave Type', ['name'])."""
+        policy = current_policy()
+        self._check_query_fields(policy, doctype, filters, order_by)
+        projection = self._list_fields(doctype, fields, policy)
         params: dict[str, Any] = {
-            "fields": json.dumps(fields or ["name"]),
+            "fields": json.dumps(projection),
             "limit_page_length": min(limit, MAX_LIMIT),
             "limit_start": max(start, 0),
         }
@@ -122,12 +165,14 @@ class FrappeClient:
             params["order_by"] = order_by
 
         body = self._get(f"/api/resource/{quote(doctype)}", params)
-        return body.get("data", [])
+        return policy.sanitize(body.get("data", []), doctype)
 
     def get_all(self, doctype: str, fields: list[str] | None = None,
                 filters: dict | list | None = None, order_by: str | None = None,
                 max_rows: int = 2000) -> list[dict[str, Any]]:
         """Like get_list, but reads page after page up to max_rows."""
+        if fields and "*" in fields:
+            fields = self._list_fields(doctype, fields, current_policy())
         rows: list[dict[str, Any]] = []
         while len(rows) < max_rows:
             page = self.get_list(doctype, fields, filters, order_by,
@@ -137,14 +182,26 @@ class FrappeClient:
                 break
         return rows[:max_rows]
 
-    def get_doc(self, doctype: str, name: str) -> dict[str, Any]:
-        """Fetch one full record by its ID, e.g. get_doc('Employee', 'HR-EMP-00001')."""
+    def get_doc(self, doctype: str, name: str, fields: list[str] | None = None) -> dict[str, Any]:
+        """Read a permitted document, with optional local field projection."""
+        policy = current_policy()
+        include = set(policy.project(fields, doctype)) if fields is not None else None
+        if include is not None and not include:
+            return {}
         path = f"/api/resource/{quote(doctype)}/{quote(name, safe='')}"
-        return self._get(path).get("data", {})
+        # Frappe's document endpoint has no field projection and includes child rows.
+        doc = self._get(path).get("data", {})
+        if include is not None:
+            doc = {field: value for field, value in doc.items() if field in include}
+        return policy.sanitize(doc, doctype, document=True)
 
     def call_method(self, method_path: str, params: dict | None = None) -> Any:
         """Call a whitelisted Frappe function, e.g. frappe.auth.get_logged_user."""
-        return self._get(f"/api/method/{method_path}", params).get("message")
+        policy = current_policy()
+        value = self._get(f"/api/method/{method_path}", params).get("message")
+        if method_path == "frappe.desk.query_report.run":
+            return policy.sanitize_report(value)
+        return policy.sanitize(value)
 
     def get_meta(self, doctype: str) -> list[dict[str, Any]]:
         """The form's own field list for a doctype and its child tables.
@@ -180,8 +237,8 @@ class FrappeClient:
                 timeout=self.timeout, stream=True,
                 allow_redirects=False,   # a redirect could carry our token elsewhere
             )
-        except requests.RequestException as exc:
-            raise FrappeError(0, f"could not reach Frappe: {exc}") from exc
+        except requests.RequestException:
+            raise FrappeError(0, "could not reach Frappe") from None
 
         try:
             if response.status_code != 200:

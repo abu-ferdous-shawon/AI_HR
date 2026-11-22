@@ -251,3 +251,28 @@ def test_exact_metadata_match_beats_higher_vector_score(site_index, monkeypatch,
     hits = sync.search_metadata(site, tier, query, 2)
     assert [hit["key"] for hit in hits] == [target, "Higher Vector Score"]
     assert [hit["score"] for hit in hits] == [0, 1]
+
+
+def test_new_never_send_rule_invalidates_the_old_snapshot_and_filters_cards(site_index, monkeypatch, tmp_path):
+    site, client = site_index
+    schema = client.schemas["Leave Application"]
+    schema["fields"].append(field("custom_private_note", "Small Text"))
+    schema["search_fields"] += ", custom_private_note"
+    result = sync.sync_metadata(site)
+    before = Path(result["path"])
+    assert "custom_private_note" in (before / "field_index.json").read_text()
+    (tmp_path / "hrms_core.yaml").write_text("""
+        pack_name: hrms_core
+        never_send:
+          doctype_fields:
+            Leave Application: [custom_private_note]
+    """)
+    monkeypatch.setattr(sync.settings, "knowledge_pack_dir", str(tmp_path))
+    assert sync.sync_metadata(site, check=True)["state"] == "stale"
+    with pytest.raises(sync.IndexError, match="Knowledge packs changed"):
+        sync.search_metadata(site, "schema_index", "Leave Application", 1)
+    result = sync.sync_metadata(site)
+    after = Path(result["path"])
+    for tier in ("table_index", "schema_index", "field_index"):
+        assert "custom_private_note" not in (after / f"{tier}.json").read_text()
+    assert "custom private note" not in read_json(after / "business_keywords.json")

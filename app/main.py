@@ -33,6 +33,7 @@ from app.registry import get_profile
 from app.registry.review import masking_review
 from app.tools.registry import load_all_tools
 from app.core.secret_store import PLAINTEXT_SEEN
+from app.knowledge_packs.loader import active_packs
 
 for noisy in ("httpx", "httpcore", "urllib3", "google_genai"):
     logging.getLogger(noisy).setLevel(logging.WARNING)
@@ -43,8 +44,11 @@ async def lifespan(_app):
     audit.setup_app_logging()
     audit.configure()
     for site in sites.get_sites().values():      # a bad sites file stops startup here
+        packs = active_packs(site)
         log.info("site %s -> %s (hosts: %s)", site.name, site.frappe_url,
                  ", ".join(site.hosts) or "any")
+        log.info("site %s knowledge packs: %s", site.name,
+                 ", ".join(pack.pack_name for pack in packs) or "none")
     if PLAINTEXT_SEEN:
         names = ", ".join(sorted(PLAINTEXT_SEEN))
         if settings.require_encrypted_secrets:

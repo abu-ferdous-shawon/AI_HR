@@ -9,6 +9,7 @@ from pathlib import Path
 
 from app.config import settings
 from app.core.masking import TYPED_SECRET_RE
+from app.knowledge_packs.redactor import current_policy
 
 MB = 1024 * 1024
 MAX_VALUE = 60
@@ -100,7 +101,10 @@ def record(event: str, **fields) -> None:
 
 def safe_args(args) -> dict:
     out = {}
+    policy = current_policy()
     for key, value in (args or {}).items():
+        if policy.blocked(str(key)):
+            continue
         key = str(key)[:40]
         if key not in SAFE_ARGS:
             out[key] = f"<hidden:{len(str(value))} chars>" if value not in (None, "") else None

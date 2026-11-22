@@ -47,6 +47,9 @@ class AgentResult:
 def build_system_prompt(vault: Vault | None = None, hint: str = "") -> str:
     today = datetime.date.today()
     text = PROMPT_FILE.read_text(encoding="utf-8")
+    text += ("\n\nSite data policy: Some fields are excluded from chat and reports. "
+             "If a requested value is unavailable, say you cannot provide it. "
+             "Use only values the permitted tools returned.")
     if vault is not None and vault.by_token:     # placeholder rules only when they apply
         text += "\n\n" + PLACEHOLDER_RULES
     if hint:

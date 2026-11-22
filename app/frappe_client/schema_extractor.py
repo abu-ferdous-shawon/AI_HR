@@ -4,13 +4,11 @@ from collections import defaultdict
 from dataclasses import dataclass
 from html import unescape
 
-from app.frappe_client.client import MAX_LIMIT, FrappeClient, FrappeError
+from app.frappe_client.client import DISPLAY_FIELD_TYPES, MAX_LIMIT, FrappeClient, FrappeError
 from app.frappe_client.report_filters import static_report_filters
 from app.indexer.util import digest
+from app.knowledge_packs.redactor import SECRET_FIELDS, NeverSendPolicy
 
-LAYOUT = frozenset({
-    "Section Break", "Column Break", "Tab Break", "HTML", "Fold", "Heading", "Button",
-})
 INTERNAL = frozenset({
     "Activity Log", "Access Log", "Comment", "Communication", "Custom Field",
     "Custom DocPerm", "Deleted Document", "DocField", "DocPerm", "DocShare",
@@ -20,10 +18,6 @@ INTERNAL = frozenset({
     "Scheduled Job Log", "Scheduled Job Type", "Server Script", "Client Script",
     "Session Default", "System Settings", "User Permission", "Version", "View Log",
     "Workflow", "Workflow Document State", "Workflow Transition",
-})
-SECRET_FIELDS = frozenset({
-    "password", "new_password", "api_key", "api_secret", "auth_token",
-    "access_token", "refresh_token", "client_secret", "user_secret",
 })
 RELATIONS = frozenset({"Link", "Dynamic Link", "Table", "Table MultiSelect"})
 OPTION_TYPES = RELATIONS | {"Select", "Currency", "Float", "Data", "Code", "Autocomplete"}
@@ -110,7 +104,7 @@ def read_catalog(client: FrappeClient, *, include=(), exclude=()) -> Catalog:
 def _field(row: dict, denied: set[str]) -> dict | None:
     name = _text(row.get("fieldname"))
     kind = _text(row.get("fieldtype"))
-    if not FIELDNAME.fullmatch(name) or name.casefold() in denied or kind in LAYOUT | {"Password"}:
+    if not FIELDNAME.fullmatch(name) or name.casefold() in denied or kind in DISPLAY_FIELD_TYPES | {"Password"}:
         return None
     options = _text(row.get("options")) if kind in OPTION_TYPES else ""
     if kind == "Dynamic Link" and options.casefold() in denied:
@@ -133,8 +127,11 @@ def read_schema(client: FrappeClient, name: str, workflows: list[str], denied=()
     fields_by_name = {field["fieldname"]: field for field in fields}
     title = _text(meta.get("title_field"))
     status = fields_by_name.get("status", {})
+    searchable = set(fields_by_name)
+    if "name" not in denied:
+        searchable.add("name")
     search_fields = [field for field in re.split(r"[\s,]+", _text(meta.get("search_fields")))
-                     if field in fields_by_name or field == "name"]
+                     if field in searchable]
     states = []
     for workflow in workflows:
         doc = client.get_doc("Workflow", workflow)
@@ -155,7 +152,7 @@ def read_schema(client: FrappeClient, name: str, workflows: list[str], denied=()
         "module": _text(meta.get("module")), "description": _description(meta.get("description")),
         "is_submittable": _checked(meta.get("is_submittable")),
         "istable": _checked(meta.get("istable")), "issingle": _checked(meta.get("issingle")),
-        "title_field": title if title in fields_by_name or title == "name" else "",
+        "title_field": title if title in searchable else "",
         "search_fields": search_fields,
         "status_options": _options(status.get("options")) if status.get("fieldtype") == "Select" else [],
         "workflow_states": states, "fields": fields,
@@ -170,7 +167,7 @@ def _options(options) -> list[str]:
     return [value.strip() for value in _text(options).splitlines() if value.strip()]
 
 
-def read_report(client: FrappeClient, name: str, denied_for) -> dict:
+def read_report(client: FrappeClient, name: str, policy: NeverSendPolicy) -> dict:
     doc = client.get_doc("Report", name)
     if _checked(doc.get("disabled")) or doc.get("report_type") not in REPORT_TYPES:
         raise MetadataError(f"Report {name} changed during sync. Retry the sync.")
@@ -190,10 +187,11 @@ def read_report(client: FrappeClient, name: str, denied_for) -> dict:
         if not filters:
             filters = static_report_filters(script, name)
             source = "JavaScript" if filters else ("undeclared" if details is not None else "unavailable")
-    denied = SECRET_FIELDS | {field.casefold() for field in denied_for(ref)}
     cleaned = []
     for row in filters:
-        item = _field(row, denied)
+        item = _field(row, policy.unknown_fields)
+        if item and policy.blocked(item["label"]):
+            continue
         if item:
             cleaned.append({key: item[key] for key in ("fieldname", "label", "fieldtype", "options", "reqd")})
     return {

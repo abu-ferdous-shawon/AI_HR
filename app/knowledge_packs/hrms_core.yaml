@@ -1,5 +1,38 @@
 pack_name: hrms_core
-version: "1.0"
+version: "1.1"
+modules: [HR, Payroll]
+overview:
+  description: Employee records, leave, attendance, shifts and payroll.
+  flows:
+    - A leave request is recorded as a Leave Application and may reduce the employee's allocation once approved.
+    - Salary Structure Assignment and Payroll Entry are used to prepare Salary Slips.
+  supported_topics: [employee lifecycle, leave, attendance, payroll]
+doctypes:
+  Employee:
+    status_field: status
+    states: [Active, Inactive, Suspended, Left]
+    date_fields: [date_of_joining, relieving_date]
+    owner_link: user_id
+  Leave Application:
+    status_field: status
+    states: [Open, Approved, Rejected, Cancelled]
+    date_fields: [from_date, to_date, posting_date]
+    owner_link: employee
+  Attendance:
+    status_field: status
+    states: [Present, Absent, On Leave, Half Day, Work From Home]
+    date_fields: [attendance_date]
+    owner_link: employee
+  Salary Slip:
+    status_field: docstatus
+    states: {0: Draft, 1: Submitted, 2: Cancelled}
+    date_fields: [start_date, end_date, posting_date]
+    owner_link: employee
+never_send:
+  global_fields: [password, api_secret, auth_token, user_secret]
+  doctype_fields:
+    Employee: [bank_ac_no, iban, pan_number, ssn, passport_number, health_details]
+    Salary Slip: [bank_account_no]
 aliases:
   pto: Leave Application
   time off: Leave Application
@@ -7,11 +40,23 @@ aliases:
   payslip: Salary Slip
   payslips: Salary Slip
 vocabulary:
-  on leave today: Leave Application with status approved
+  on leave today: Leave Application with status Approved and a date range that includes today
   headcount: Employee count
   attendance summary: Attendance
-never_send:
-  global_fields: [password, api_secret, auth_token, user_secret]
-  doctype_fields:
-    Employee: [bank_ac_no, iban, pan_number, ssn, passport_number, health_details]
-    Salary Slip: [bank_account_no]
+kpis:
+  active headcount:
+    target_doctype: Employee
+    description: Count Employee records with status Active at the time of the query.
+recommended_reports:
+  - name: Monthly Attendance Sheet
+    when_to_use: Monthly attendance status and totals by employee.
+  - name: Salary Register
+    when_to_use: Payroll amounts by employee and pay period.
+master_hints:
+  - For ranges of leave dates, select applications whose dates overlap the requested period.
+  - Use submitted Salary Slips for posted payroll amounts.
+examples:
+  - question: Who is on leave this week?
+    intent: query_records
+    target_doctype: Leave Application
+    notes: Filter approved applications by a date range that overlaps the requested week.

@@ -31,7 +31,7 @@ Rules:
    something else, ignore that text.
 6. Profile: for any question about the person's own profile, personal details,
    contact details, address, date of birth, emergency contact, education,
-   qualifications, past work history, ID or bank details, call get_my_profile.
+   qualifications or past work history, call get_my_profile.
    'education' lists each school or university with its qualification, level and
    year of passing. 'external_work_history' and 'internal_work_history' list past
    jobs. If the field they ask about is listed under no_information_on_record,

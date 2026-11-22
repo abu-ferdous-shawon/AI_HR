@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from app.frappe_client.client import FrappeError
 from app.auth.security import AccessDenied, ToolInputError, UserContext, is_hr_admin, scrub
+from app.knowledge_packs.redactor import current_policy
 
 log = logging.getLogger("hr_ai.tools")
 
@@ -87,7 +88,8 @@ def run_tool(name: str, args: dict | None, ctx: UserContext) -> dict:
         if selected.hr_only and not is_hr_admin(ctx):
             _outcome.set("denied")
             return {"error": HR_ONLY_MESSAGE}
-        value = scrub(selected.func(ctx, **clean), selected.allow)
+        value = current_policy().sanitize(selected.func(ctx, **clean))
+        value = scrub(value, selected.allow)
         _outcome.set("ok")
         return {"result": value}
     except AccessDenied as exc:
@@ -98,9 +100,9 @@ def run_tool(name: str, args: dict | None, ctx: UserContext) -> dict:
         return {"error": str(exc)}
     except FrappeError as exc:
         _outcome.set("failed")
-        log.warning("Frappe error in %s: %s", name, exc)  # details stay in the log
+        log.warning("Frappe error in %s (HTTP %s)", name, exc.status_code)
         return {"error": "The HR system could not complete this request."}
-    except Exception:
+    except Exception as exc:
         _outcome.set("failed")
-        log.exception("Unexpected error in tool %s", name)
+        log.error("Unexpected error in tool %s (%s)", name, type(exc).__name__)
         return {"error": "Something went wrong while running this tool."}

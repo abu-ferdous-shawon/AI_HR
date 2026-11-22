@@ -6,6 +6,7 @@ from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from app.frappe_client.client import FrappeError, get_frappe_client
 from app.core.masking import is_confidential
 from app.auth.security import AccessDenied, ToolInputError, UserContext
+from app.knowledge_packs.redactor import current_policy
 from app.records.scope import Access, resolve_access
 from app.registry import Profile, RecordType, get_profile
 from app.registry.models import norm
@@ -290,6 +291,10 @@ def summarize_records(ctx: UserContext, record_type, *, aggregation=None, from_d
         if not rt.group_by_allowed:
             raise ToolInputError(f"{rt.label} cannot be grouped.")
         group_field = _choose(dict.fromkeys(rt.group_by_allowed), group_by, "group_by")
+
+    policy = current_policy()
+    if any(field and policy.blocked(field, rt.doctype) for field in (agg.field, group_field)):
+        raise ToolInputError("That field is unavailable for aggregation.")
 
     cap = prof.limits.max_rows
     rows = _unique(_fetch(rt, query.filters, cap + 1))

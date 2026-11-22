@@ -1,5 +1,27 @@
 pack_name: erpnext_core
-version: "1.0"
+version: "1.1"
+modules: [Accounts, Selling, Buying, Stock]
+overview:
+  description: Sales, purchasing, invoicing, payments and inventory.
+  flows:
+    - Sales Orders can lead to Delivery Notes and Sales Invoices.
+    - Purchase Orders can lead to Purchase Receipts and Purchase Invoices.
+  supported_topics: [sales, purchasing, receivables, payables, stock]
+doctypes:
+  Sales Invoice:
+    status_field: docstatus
+    states: {0: Draft, 1: Submitted, 2: Cancelled}
+    date_fields: [posting_date, due_date]
+    owner_link: customer
+  Purchase Invoice:
+    status_field: docstatus
+    states: {0: Draft, 1: Submitted, 2: Cancelled}
+    date_fields: [posting_date, due_date]
+    owner_link: supplier
+never_send:
+  global_fields: [payment_gateway_secret]
+  doctype_fields:
+    Bank Account: [bank_account_no, iban]
 aliases:
   customer invoice: Sales Invoice
   customer invoices: Sales Invoice
@@ -11,3 +33,19 @@ vocabulary:
   receivables: Sales Invoice outstanding amounts
   payables: Purchase Invoice outstanding amounts
   sales pipeline: Quotation
+kpis:
+  outstanding receivables:
+    target_doctype: Sales Invoice
+    description: Total outstanding amount on submitted sales invoices, grouped by currency.
+recommended_reports:
+  - name: Accounts Receivable
+    when_to_use: Customer balances and aging by due date.
+  - name: Stock Balance
+    when_to_use: Current or historical stock balances by item and warehouse.
+master_hints:
+  - Keep transaction currencies separate when totaling invoice amounts.
+examples:
+  - question: Which customers have invoices past due?
+    intent: query_records
+    target_doctype: Sales Invoice
+    notes: Use submitted invoices with a past due date and a positive outstanding amount.
