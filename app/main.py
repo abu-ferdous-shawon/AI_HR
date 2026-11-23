@@ -13,7 +13,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi import Path as PathParam
 from fastapi.responses import FileResponse, Response
 from fastapi.security import APIKeyHeader
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from app.config import settings
 from app.agent.orchestrator import run_agent
@@ -34,6 +34,8 @@ from app.registry.review import masking_review
 from app.tools.registry import load_all_tools
 from app.core.secret_store import PLAINTEXT_SEEN
 from app.knowledge_packs.loader import active_packs
+from app.mutations.confirmation import bind, confirmations, execute_mutation
+from app.mutations.service import MutationFailure, Operation
 
 for noisy in ("httpx", "httpcore", "urllib3", "google_genai"):
     logging.getLogger(noisy).setLevel(logging.WARNING)
@@ -183,9 +185,10 @@ def current_user(request: Request,
 
 
 def request_credentials(authorization: str | None = Depends(api_key_header),
-                        cookie: str | None = Header(default=None)) -> Credentials | None:
+                        cookie: str | None = Header(default=None),
+                        x_frappe_csrf_token: str | None = Header(default=None)) -> Credentials | None:
     """The caller's own ERP login, from the same headers the login check used."""
-    return extract_credentials(authorization, cookie)
+    return extract_credentials(authorization, cookie, x_frappe_csrf_token)
 
 
 def _is_dev(ctx: UserContext) -> bool:
@@ -227,6 +230,12 @@ def home():
 def widget_script():
     """The chat widget. Public on purpose: it holds no data and no secrets."""
     return FileResponse(STATIC_DIR / "ai_chat.js", media_type="application/javascript",
+                        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-cache"})
+
+
+@app.get("/mutation_confirmation.js", include_in_schema=False)
+def mutation_confirmation_script():
+    return FileResponse(STATIC_DIR / "mutation_confirmation.js", media_type="application/javascript",
                         headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-cache"})
 
 
@@ -307,11 +316,46 @@ class PictureInfo(BaseModel):
     caption: str = ""
 
 
+class MutationChange(BaseModel):
+    field: str
+    before: JsonValue
+    after: JsonValue
+
+
+class MutationCard(BaseModel):
+    token: str
+    operation: Operation
+    doctype: str
+    document_name: str | None
+    changes: list[MutationChange]
+    expires_at: str
+
+
+class MutationDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    token: str = Field(pattern=r"^[A-Za-z0-9_-]{43}$")
+    conversation_id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,64}$")
+    decision: Literal["confirm", "discard"]
+
+
+class MutationResult(BaseModel):
+    state: Literal["executed", "discarded"]
+    operation: Operation
+    doctype: str
+    document_name: str | None
+    answer: str
+
+
 class ChatResponse(BaseModel):
     answer: str
     conversation_id: str
     files: list[FileInfo] = Field(default_factory=list)
     pictures: list[PictureInfo] = Field(default_factory=list)
+    confirmation: MutationCard | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+_PROPOSAL_REPLIES = {"reviewed", "i reviewed it", "confirm", "yes confirm", "yes", "discard"}
 
 
 @app.get("/health")
@@ -358,14 +402,23 @@ def chat(request: Request, body: ChatRequest, ctx: UserContext = Depends(current
         _audit_chat(request, ctx, cid, body, len(body.images),
                     f"rejected_{exc.status_code}", started)
         raise
+    own_login = creds if settings.frappe_auth_mode == "user_session" and not _is_dev(ctx) else None
+    reply = " ".join(body.message.casefold().strip().rstrip(".!").replace(",", " ").split())
+    if own_login and body.conversation_id and not images and reply in _PROPOSAL_REPLIES:
+        pending = confirmations.pending_card(bind(ctx, cid, own_login))
+        if pending is not None:
+            card = MutationCard(**pending)
+            _audit_chat(request, ctx, cid, body, 0, "ok", started)
+            return ChatResponse(
+                answer=f"Click Confirm {card.operation} below to apply the change or Discard to dismiss it.",
+                conversation_id=cid, confirmation=card,
+            )
     key = (sites.current_site().name, ctx.user_id, cid)  # tied to site and user  # tied to the user, so IDs cannot be borrowed
 
     with _lock:
         saved = _store.get(key)
     history, vault = (list(saved[0]), saved[1]) if saved else ([], None)
     try:
-        own_login = creds if (settings.frappe_auth_mode == "user_session"
-                              and not _is_dev(ctx)) else None
         with use_credentials(own_login):
             result = run_agent(body.message, ctx, history=history, vault=vault, images=images)
     except LLMBusy as exc:
@@ -385,9 +438,39 @@ def chat(request: Request, body: ChatRequest, ctx: UserContext = Depends(current
             _store.popitem(last=False)
 
     _audit_chat(request, ctx, cid, body, len(images), "ok", started, result)
-    return ChatResponse(answer=result.answer, conversation_id=cid,
+    card = None
+    if result.mutation:
+        try:
+            card = MutationCard(**confirmations.issue(bind(ctx, cid, own_login), result.mutation))
+        except MutationFailure as exc:
+            raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+        audit.record("mutation", decision="propose", state="pending", site=sites.current_site().name,
+                     user=ctx.user_id, conversation=cid, operation=card.operation, doctype=card.doctype)
+    return ChatResponse(answer=result.answer, conversation_id=cid, confirmation=card,
                         files=[FileInfo(**f) for f in result.files],
                         pictures=[PictureInfo(**p) for p in result.pictures])
+
+
+@app.post("/chat/confirm", response_model=MutationResult)
+def confirm_change(body: MutationDecision, ctx: UserContext = Depends(current_user),
+                   creds: Credentials | None = Depends(request_credentials)):
+    if creds is None or settings.frappe_auth_mode != "user_session" or _is_dev(ctx):
+        raise HTTPException(status_code=403, detail="Sign in with your own Frappe account to confirm a change.")
+    wait = gateway.chat_limiter.hit(ctx.user_id)
+    if wait:
+        raise HTTPException(status_code=429, detail=gateway.wait_message(wait), headers={"Retry-After": str(wait)})
+    event = {"site": sites.current_site().name, "user": ctx.user_id,
+             "conversation": body.conversation_id, "decision": body.decision}
+    try:
+        with use_credentials(creds):
+            result = execute_mutation(body.token, ctx, body.conversation_id, get_frappe_client(),
+                                      discard=body.decision == "discard")
+    except MutationFailure as exc:
+        audit.record("mutation", **event, state="rejected", status=exc.status)
+        raise HTTPException(status_code=exc.status, detail=str(exc)) from None
+    audit.record("mutation", **event, state=result["state"],
+                 operation=result["operation"], doctype=result["doctype"])
+    return MutationResult(**result)
 
 
 @app.get("/reports/{report_id}")

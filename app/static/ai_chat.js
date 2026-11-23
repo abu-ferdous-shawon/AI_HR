@@ -42,6 +42,9 @@
   .caption { font-size:12px; color:var(--muted); }
   .files { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
   .files button { border:1px solid var(--line); background:var(--bg); border-radius:8px; padding:4px 9px; cursor:pointer; }
+  .mutation-card { margin-top:10px; padding:10px; border:1px solid var(--line, #d5dae4); border-radius:8px; }
+  .mutation-field { margin-top:6px; font-size:.9em; }
+  .mutation-status { margin-top:6px; font-size:.9em; }
   .thumbs { display:flex; gap:8px; padding:6px 12px 0; flex-wrap:wrap; }
   .thumb { position:relative; }
   .thumb img { height:48px; border-radius:6px; border:1px solid var(--line); display:block; }
@@ -266,6 +269,18 @@
       if (res.ok) {
         convId = data.conversation_id;
         var div = addMsg('bot', data.answer || '');
+        if (data.confirmation) {
+          try {
+            var confirmation = await import(BASE + '/mutation_confirmation.js');
+            confirmation.addConfirmation(div, data.confirmation, data.conversation_id, BASE + '/chat/confirm', function () {
+              var csrf = window.frappe && frappe.csrf_token;
+              return headers(typeof csrf === 'string' ? { 'X-Frappe-CSRF-Token': csrf } : {});
+            });
+            scrollDown();
+          } catch (error) {
+            addMsg('error', 'The confirmation card could not load. Start a new proposal.');
+          }
+        }
         if (data.files && data.files.length) { addFiles(div, data.files); }
         if (data.pictures && data.pictures.length) { showPictures(div, data.pictures); }
       } else if (res.status === 401) {

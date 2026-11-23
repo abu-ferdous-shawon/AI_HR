@@ -31,10 +31,11 @@ NON_COLUMN_TYPES = DISPLAY_FIELD_TYPES | {"Table", "Table MultiSelect", "Passwor
 class FrappeError(Exception):
     """Raised when Frappe cannot be reached or returns an error."""
 
-    def __init__(self, status_code: int, message: str):
+    def __init__(self, status_code: int, message: str, *, error_type: str = ""):
         super().__init__(f"Frappe error {status_code}: {message}")
         self.status_code = status_code  # 0 means we never got a reply
         self.message = message
+        self.error_type = error_type
 
 class UserLoginRequired(FrappeError):
     """A data read had no user login and did not choose the service account."""
@@ -230,6 +231,58 @@ class FrappeClient:
         if method_path == "frappe.desk.query_report.run":
             return policy.sanitize_report(value)
         return policy.sanitize(value)
+
+    def has_document_permission(self, doctype: str, permission: str, name: str | None = None) -> bool:
+        result = self.call_method("frappe.client.has_permission", {
+            "doctype": doctype, "docname": name or "", "perm_type": permission,
+        })
+        return isinstance(result, dict) and result.get("has_permission") in (True, 1)
+
+    def _write_document(self, method: str, doctype: str, name: str | None,
+                        payload: dict | None = None) -> dict:
+        if not self.acts_as_user:
+            raise UserLoginRequired()
+        path = f"/api/resource/{quote(doctype, safe='')}"
+        if name is not None:
+            if name in {"", ".", ".."} or "/" in name or "\\" in name:
+                raise FrappeError(400, "invalid record ID")
+            path += f"/{quote(name, safe='')}"
+        try:
+            response = self.session.request(
+                method, self.base_url + path, json=payload, timeout=self.timeout,
+                allow_redirects=False,
+            )
+        except requests.RequestException:
+            raise FrappeError(0, "could not verify the write outcome") from None
+        if not 200 <= response.status_code < 300:
+            error_type = ""
+            try:
+                body = response.json()
+                candidate = body.get("exc_type") if isinstance(body, dict) else None
+                if isinstance(candidate, str) and FIELD_NAME.fullmatch(candidate):
+                    error_type = candidate
+            except ValueError:
+                pass
+            code = 401 if 300 <= response.status_code < 400 else response.status_code
+            raise FrappeError(code, "write request failed", error_type=error_type)
+        if method == "DELETE":
+            return {}
+        try:
+            document = response.json()["data"]
+        except (ValueError, TypeError, KeyError):
+            raise FrappeError(0, "could not verify the write outcome") from None
+        if not isinstance(document, dict):
+            raise FrappeError(0, "could not verify the write outcome")
+        return current_policy().sanitize(document, doctype, document=True)
+
+    def create_document(self, doctype: str, payload: dict) -> dict:
+        return self._write_document("POST", doctype, None, payload)
+
+    def update_document(self, doctype: str, name: str, payload: dict, *, modified: str) -> dict:
+        return self._write_document("PUT", doctype, name, {**payload, "modified": modified})
+
+    def delete_document(self, doctype: str, name: str) -> None:
+        self._write_document("DELETE", doctype, name)
 
     def get_meta(self, doctype: str) -> list[dict[str, Any]]:
         """The form's own field list for a doctype and its child tables.

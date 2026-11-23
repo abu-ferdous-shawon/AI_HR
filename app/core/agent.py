@@ -2,6 +2,7 @@ import datetime
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.core.language import language_hint
 from app.core.llm import get_llm
@@ -11,6 +12,9 @@ from app.auth.security import UserContext
 from app.agent.intent_router import localized
 from app.core.audit import describe_result, safe_args
 from app.tools.registry import get_tool_specs, load_all_tools, run_tool, take_outcome
+
+if TYPE_CHECKING:
+    from app.mutations.service import PreparedMutation
 
 log = logging.getLogger("hr_ai.agent")
 
@@ -43,6 +47,7 @@ class AgentResult:
     vault: Vault = field(default_factory=Vault)         # keep it with the conversation
     files: list[dict] = field(default_factory=list)     # reports created for the person
     pictures: list[dict] = field(default_factory=list)  # pictures to show the person
+    mutation: "PreparedMutation | None" = None  # prepared data stays server-side until the API creates a card
 
 
 def build_system_prompt(vault: Vault | None = None, hint: str = "") -> str:

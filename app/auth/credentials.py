@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 _AUTH_RE = re.compile(r"(?:token\s+[^\s:]+:\S+|bearer\s+\S+)", re.IGNORECASE)
 _SID_RE = re.compile(r"(?:^|;\s*)sid=([^;]*)")
 _SID_OK = re.compile(r"[A-Za-z0-9_.~-]{8,200}")
+_CSRF_OK = re.compile(r"[A-Za-z0-9_.~-]{8,256}")
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class Credentials:
     """
     authorization: str | None = field(default=None, repr=False)
     sid: str | None = field(default=None, repr=False)
+    csrf_token: str | None = field(default=None, repr=False)
 
     def __repr__(self) -> str:
         return "Credentials(<hidden>)"
@@ -24,11 +26,15 @@ class Credentials:
         if self.authorization:
             return {"Authorization": self.authorization}
         if self.sid:
-            return {"Cookie": f"sid={self.sid}"}     # only the session id, no other cookies
+            headers = {"Cookie": f"sid={self.sid}"}   # only the session id, no other cookies
+            if self.csrf_token:
+                headers["X-Frappe-CSRF-Token"] = self.csrf_token
+            return headers
         return {}
 
 
-def extract_credentials(authorization: str | None, cookie: str | None) -> Credentials | None:
+def extract_credentials(authorization: str | None, cookie: str | None,
+                        csrf_token: str | None = None) -> Credentials | None:
     """Same precedence as the login check: an Authorization header wins over a cookie."""
     if authorization and str(authorization).strip():
         value = str(authorization).strip()
@@ -37,7 +43,8 @@ def extract_credentials(authorization: str | None, cookie: str | None) -> Creden
         match = _SID_RE.search(str(cookie))
         sid = match.group(1).strip() if match else ""
         if sid and sid != "Guest" and _SID_OK.fullmatch(sid):
-            return Credentials(sid=sid)
+            token = csrf_token if isinstance(csrf_token, str) and _CSRF_OK.fullmatch(csrf_token) else None
+            return Credentials(sid=sid, csrf_token=token)
     return None
 
 

@@ -46,6 +46,14 @@ class SiteConfig(BaseModel):
     indexing_schedule: str = "manual"
     index_include_doctypes: list[str] = Field(default_factory=list)
     index_exclude_doctypes: list[str] = Field(default_factory=list)
+    write_doctypes: list[str] = Field(default_factory=list)
+
+    @field_validator("write_doctypes")
+    @classmethod
+    def _write_doctypes(cls, names):
+        if any(not re.fullmatch(r"[A-Za-z][A-Za-z0-9 _-]{0,139}", name.strip()) for name in names):
+            raise ValueError("write_doctypes must contain valid DocType names")
+        return list(dict.fromkeys(name.strip() for name in names))
 
     @field_validator("name")
     @classmethod
@@ -113,6 +121,7 @@ def _global_defaults() -> dict:
         "indexing_schedule": settings.indexing_schedule,
         "index_include_doctypes": [d.strip() for d in settings.index_include_doctypes.split(",") if d.strip()],
         "index_exclude_doctypes": [d.strip() for d in settings.index_exclude_doctypes.split(",") if d.strip()],
+        "write_doctypes": [d.strip() for d in settings.write_doctypes.split(",") if d.strip()],
     }
 
 

@@ -4,6 +4,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.agent.intent_router import localized, route_intent
+from app.agent.mutation_planner import plan_mutation
 from app.agent.query_rewriter import rewrite_query
 from app.agent.retriever import render_context, retrieve, use_read_context
 from app.auth.credentials import current_holder
@@ -33,6 +34,8 @@ def run_agent(question: str, ctx: UserContext, history: list[Message] | None = N
     history = list(history or ())
     vault = vault if vault is not None else Vault()
     route = route_intent(question, has_image=bool(images))
+    if route.kind == "erp_write" and current_holder() is not None and current_site().write_doctypes:
+        return plan_mutation(question, ctx, get_frappe_client(), history, vault, llm)
     if route.reply:
         return _immediate(question, history, vault, route.reply)
     arguments = {"history": history, "llm": llm, "vault": vault, "images": images}

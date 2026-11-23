@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     metadata_index_dir: str = "metadata_indexes"
     index_include_doctypes: str = ""
     index_exclude_doctypes: str = ""
+    write_doctypes: str = ""  # comma-separated targets for confirmed chat writes
     # "manual" or "every:<hours>", for example every:24
     indexing_schedule: str = "manual"
 

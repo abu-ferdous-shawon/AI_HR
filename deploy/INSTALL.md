@@ -336,7 +336,7 @@ Open `http://localhost:8100/` and run these checks:
 | Aggregation | Count Sales Invoices by docstatus for this month. | Each returned count matches the same filters in Frappe Desk. |
 | Named report | Run Monthly Attendance Sheet for October 2026 for `<company>`. | The report executes under the signed-in user's permissions. Chat can ask for required filter values. Compare against the report with the same filters in Frappe Desk. |
 | Access and redaction | Ask for a record this account cannot read, or ask for the Phase Three Private Note. | Chat gives no restricted record or excluded value. |
-| Write routing | Cancel Sales Invoice `<ID>`. | Chat explains that changes require confirmation. Use Frappe Desk to confirm the invoice status. |
+| Write routing | Cancel Sales Invoice `<ID>`. | Chat requires a Phase 5 confirmation before attempting a change. Use Frappe Desk to confirm the invoice status. |
 
 Use your locally configured audit log to see which tool executed. The new tool
 names are `search_schema`, `query_records`, `get_record_detail`,
@@ -351,4 +351,64 @@ the schema. Use a populated DocType for field and aggregation checks.
 
 ```bash
 .venv/bin/python -m pytest -q tests/test_phase4_reads.py tests/test_metadata_index.py tests/test_knowledge_packs.py
+```
+
+## Phase 5 confirmed writes
+
+Chat writes are available for explicitly enabled DocTypes. Set
+`WRITE_DOCTYPES=ToDo` for a single-site local test. A multi-site setup uses
+`write_doctypes: [ToDo]` under the site's entry. Add only the DocTypes you
+intend to test. The chat user supplies their own Frappe credentials and
+Frappe still checks native permissions. In Desk, the widget forwards the
+current session's CSRF token with the confirmation request.
+
+### Start the local backend
+
+Use your usual chat configuration and a regular user token. Phase 5 proposals
+use live Frappe metadata, so you can test `ToDo` independently of the Phase 4
+invoice and report fixtures.
+
+```bash
+cd ~/ai_backend
+WRITE_DOCTYPES=ToDo DEV_MODE=false FRAPPE_AUTH_MODE=user_session \
+  .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8100
+```
+
+### Test in chat and Frappe Desk
+
+1. Sign into the local chat as a user who can create and edit their own ToDos.
+   Ask **Create a ToDo with description "Phase 5 confirmation check".**
+   Chat should display a **Create ToDo** card showing the exact field. Search
+   for the description in Desk before confirming and verify it is absent.
+   You can type **reviewed** in the same chat to show the card again. The
+   card's **Confirm create** button applies the change.
+2. Click **Discard**. Refresh the Desk list and verify the test ToDo is still
+   absent. Ask for it again and click **Confirm create**. Copy the returned
+   record ID and open that record in Desk.
+3. Ask **Update ToDo <record ID> and change description to "Phase 5 updated".**
+   Verify the card shows the original and new descriptions. Click
+   **Confirm update** and compare the saved field in Desk.
+4. Ask for a second update, then edit the same ToDo directly in Desk before
+   clicking **Confirm update**. The backend should reject the older proposal.
+   Refresh Desk and verify the newer change is present.
+5. Ask **Delete ToDo <record ID>** for the test record. Confirm the deletion
+   only once you have checked the exact ID on the card. Refresh Desk and
+   verify the test record is gone.
+
+ToDo supports create, update, and delete. To test submission and cancellation,
+enable a submittable test DocType as well. Use a draft for **Submit** and a
+submitted record for **Cancel**. The same user needs the corresponding Frappe
+permissions and Write access. Verify each proposed state in Desk before and
+after confirmation. Chat updates apply to draft records and support scalar
+fields. Creates support scalar fields and a bounded set of child rows.
+
+Confirmations expire after five minutes and are single-use. Run proposal and
+confirmation against the same backend process. A restart clears outstanding
+cards. An existing record is checked again at confirmation, and updates,
+submission and cancellation pass the reviewed version to Frappe for its
+timestamp check. Frappe's native DELETE endpoint has no version argument, so
+the backend checks the record immediately before calling it.
+
+```bash
+.venv/bin/python -m pytest -q tests/test_mutations.py
 ```

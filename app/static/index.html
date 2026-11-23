@@ -76,6 +76,9 @@
   #mic.rec { background: #d93025; color: #fff; border-color: #d93025; }
   #sttLang { padding: 8px 6px; }
   .speakBtn { display: block; margin-top: 8px; font-size: 13px; padding: 4px 10px; }
+  .mutation-card { margin-top:10px; padding:10px; border:1px solid var(--line, #d5dae4); border-radius:8px; }
+  .mutation-field { margin-top:6px; font-size:.9em; }
+  .mutation-status { margin-top:6px; font-size:.9em; }
 </style>
 </head>
 <body>
@@ -387,7 +390,16 @@
       if (res.ok) {
         convId = data.conversation_id;
         const div = addMsg('bot', data.answer);
+        if (data.confirmation) {
+          try {
+            const { addConfirmation } = await import('/mutation_confirmation.js');
+            addConfirmation(div, data.confirmation, data.conversation_id, '/chat/confirm', authHeaders);
+          } catch (error) {
+            addMsg('error', 'The confirmation card could not load. Start a new proposal.');
+          }
+        }
         addSpeak(div, data.answer);
+        if (data.confirmation) msgs.scrollTop = msgs.scrollHeight;
         if (data.files && data.files.length) addFiles(div, data.files);
         if (data.pictures && data.pictures.length) showPictures(div, data.pictures);        
       } else if (res.status === 401) {
