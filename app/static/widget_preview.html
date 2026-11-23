@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HR Assistant Widget Preview</title>
+<style>
+  :root { color-scheme: light dark; font: 16px/1.55 "Lato", "Trebuchet MS", "Noto Sans Bengali", "Nirmala UI", sans-serif; }
+  body { margin: 0; color: #17233b; background: #f2f5fa; }
+  main { max-width: 35rem; margin: 0 0 0 clamp(1.25rem, 7vw, 6rem); padding: clamp(2.5rem, 9vh, 6rem) 1rem 4rem 0; }
+  h1 { font-size: clamp(1.75rem, 4vw, 2.6rem); line-height: 1.15; margin: 0 0 .8rem; }
+  p { color: #505e77; margin: 0 0 1.4rem; }
+  .prompts { display: flex; flex-wrap: wrap; gap: .65rem; }
+  .prompts button { font: inherit; color: inherit; cursor: pointer; border: 1px solid #bcc9df; background: #fff; border-radius: 8px; padding: .5rem .8rem; }
+  .prompts button:hover { background: #e8efff; }
+  .prompts button:focus-visible { outline: 2px solid #3265d6; outline-offset: 2px; }
+  @media (prefers-color-scheme: dark) {
+    body { color: #e3eaf7; background: #111926; }
+    p { color: #aebcd2; }
+    .prompts button { border-color: #415474; background: #1d2a3f; }
+    .prompts button:hover { background: #293b57; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>HR Assistant widget</h1>
+  <p>Open the chat bubble or try a sample prompt. The preview uses sample replies and a sample voice transcript.</p>
+  <div class="prompts" aria-label="Sample prompts">
+    <button type="button" data-prompt="Show my leave applications.">English</button>
+    <button type="button" data-prompt="আমার ছুটির আবেদনগুলো দেখান।" lang="bn">বাংলা</button>
+    <button type="button" data-prompt="Amar chhutir abedon dekhao.">Banglish</button>
+  </div>
+</main>
+
+<script>
+  window.HR_AI_BASE = '';
+
+  const sampleAnswers = {
+    en: `You have two approved leave applications.
+
+### Casual leave
+- **Dates** 2026-11-09 to 2026-11-10
+- **Duration** 2 days
+
+### Annual leave
+- **Date** 2026-02-26
+- **Duration** 1 day`,
+    bn: `আপনার দুটি ছুটির আবেদন অনুমোদিত হয়েছে।
+
+### নৈমিত্তিক ছুটি
+- **সময়কাল** ২০২৬-১১-০৯ থেকে ২০২৬-১১-১০
+- **মেয়াদ** ২ দিন
+
+### বার্ষিক ছুটি
+- **তারিখ** ২০২৬-০২-২৬
+- **মেয়াদ** ১ দিন`,
+    banglish: `Apnar duti chhutir abedon onumodito hoyeche.
+
+### Noimittik chhuti
+- **Tarikh** 2026-11-09 theke 2026-11-10
+- **Meyad** 2 din
+
+### Barshik chhuti
+- **Tarikh** 2026-02-26
+- **Meyad** 1 din`,
+  };
+
+  // The preview returns sample responses for the real widget's chat and voice controls.
+  const fetchResource = window.fetch.bind(window);
+  function sampleResponse(data) {
+    return Promise.resolve(new Response(JSON.stringify(data), {
+      headers: { 'Content-Type': 'application/json' },
+    }));
+  }
+  window.fetch = function (url, options) {
+    if (typeof url !== 'string') return fetchResource(url, options);
+    if (url === '/chat/welcome') return sampleResponse({ display_name: 'Demo User' });
+    if (url === '/speech/config') return sampleResponse({ enabled: true });
+    if (url.startsWith('/stt?lang=') && options?.method === 'POST') {
+      return sampleResponse({ text: 'আমার ছুটির আবেদনগুলো দেখান।' });
+    }
+    if (url !== '/chat' || options?.method !== 'POST') return fetchResource(url, options);
+
+    const { message, debug } = JSON.parse(options.body);
+    const language = /[\u0980-\u09ff]/.test(message) ? 'bn'
+      : /\b(amar|apnar|chhuti|chhutir|dekhao|dekhan)\b/i.test(message) ? 'banglish' : 'en';
+    const reply = { answer: sampleAnswers[language], conversation_id: 'widget-preview' };
+    if (debug) reply.debug = { mode: 'local preview', retry_count: 0 };
+    return sampleResponse(reply);
+  };
+</script>
+<script src="/ai_chat.js"></script>
+<script>
+  const widget = document.getElementById('hr-ai-chat-host')?.shadowRoot;
+  const launcher = widget?.querySelector('.fab');
+  const panel = widget?.querySelector('.panel');
+  const input = widget?.querySelector('textarea');
+  const send = widget?.querySelector('button.send');
+
+  for (const button of document.querySelectorAll('[data-prompt]')) {
+    button.addEventListener('click', () => {
+      if (!panel || !send || !input) return;
+      if (panel.hidden) launcher.click();
+      input.value = button.dataset.prompt;
+      send.click();
+    });
+  }
+</script>
+</body>
+</html>

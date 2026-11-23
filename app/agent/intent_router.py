@@ -41,6 +41,11 @@ _REPLIES = {
         "অনুরোধটি সম্পন্ন করতে পারিনি। রেকর্ড আইডি, রিপোর্ট ফিল্টার বা তারিখের সীমা দেখে আবার চেষ্টা করুন।",
         "Query ta shesh korte parini. Record ID, report filter ba tarikh dekhe abar try korun.",
     ),
+    "read_failed": (
+        "Frappe could not complete that read. Please try again shortly.",
+        "ফ্রাপে রেকর্ডটি পড়তে পারেনি। কিছুক্ষণ পর আবার চেষ্টা করুন।",
+        "Frappe record ta porte pareni. Kichukhon por abar try korun.",
+    ),
 }
 
 

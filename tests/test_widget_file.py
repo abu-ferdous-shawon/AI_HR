@@ -12,8 +12,9 @@ JS = Path(main.STATIC_DIR) / "ai_chat.js"
 TEXT = JS.read_text(encoding="utf-8")
 
 
-def test_the_script_is_served_with_safe_headers():
-    r = TestClient(main.app).get("/ai_chat.js")
+@pytest.mark.parametrize("path", ["/ai_chat.js", "/chat_message.js", "/voice_input.js"])
+def test_the_script_is_served_with_safe_headers(path):
+    r = TestClient(main.app).get(path)
     assert r.status_code == 200
     assert "javascript" in r.headers["content-type"]
     assert r.headers["x-content-type-options"] == "nosniff"
@@ -26,8 +27,22 @@ def test_it_uses_the_frappe_session_cookie_and_stores_no_credentials():
 
 
 def test_it_never_builds_html_from_text():
+    renderer = (main.STATIC_DIR / "chat_message.js").read_text(encoding="utf-8")
     for banned in ("innerHTML", "outerHTML", "insertAdjacentHTML", "document.write", "eval(", "new Function"):
         assert banned not in TEXT, banned
+        assert banned not in renderer, banned
+
+
+def test_both_interfaces_load_the_same_reply_renderer():
+    page = (main.STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert "import('/chat_message.js')" in page
+    assert "import(BASE + '/chat_message.js')" in TEXT
+
+
+def test_both_interfaces_use_the_same_voice_input():
+    page = (main.STATIC_DIR / "index.html").read_text(encoding="utf-8")
+    assert "import('/voice_input.js')" in page and "endpoint: '/stt'" in page
+    assert "import(BASE + '/voice_input.js')" in TEXT and "endpoint: BASE + '/stt'" in TEXT
 
 
 def test_it_shows_only_the_answer_never_tool_output():

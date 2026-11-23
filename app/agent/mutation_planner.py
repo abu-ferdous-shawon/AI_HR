@@ -1,6 +1,7 @@
 """Interpret one chat write request as a proposal. The model has no confirm API."""
 import json
 import re
+import time
 
 from pydantic import ValidationError
 
@@ -11,6 +12,7 @@ from app.core.llm.base import LLMProvider, Message
 from app.core.masking import Vault
 from app.auth.security import UserContext
 from app.core.sites import current_site
+from app.core.turn_trace import current_trace
 from app.frappe_client.client import FrappeClient, FrappeError
 from app.indexer.alias_resolver import normalize
 from app.knowledge_packs.loader import active_packs
@@ -63,7 +65,12 @@ def plan_mutation(question: str, user: UserContext, client: FrappeClient, histor
                   vault: Vault, llm: LLMProvider | None) -> AgentResult:
     operation = _literal_operation(question)
     targets = _targets(question)
+    trace = current_trace()
+    if trace:
+        trace.matched_doctypes = targets
     if operation is None or len(targets) != 1:
+        if trace:
+            trace.error("proposal", "invalid_target")
         return _draft_result(question,
                              "Ask for one create, update, submit, cancel, or delete and name a DocType enabled for chat writes.",
                              history, vault)
@@ -71,6 +78,8 @@ def plan_mutation(question: str, user: UserContext, client: FrappeClient, histor
     # Use a fresh vault so the proposed payload cannot refer to values from previous chat turns.
     planning_vault = Vault()
     masked = planning_vault.mask_typed(question)
+    started = time.monotonic()
+    outcome, status = None, None
     try:
         types = load_mutation_schema(client, doctype, operation)
         schema = describe_mutation_fields(doctype, operation, types)
@@ -100,12 +109,23 @@ def plan_mutation(question: str, user: UserContext, client: FrappeClient, histor
         ):
             raise MutationFailure(422, "Include the exact record ID in your request.")
         prepared = prepare_mutation(client, user, request, types)
+        outcome = "ok"
     except ValidationError:
+        outcome, status = "invalid", 422
         return _draft_result(question, "The proposal was invalid. Check the record ID and field values.", history, vault)
     except FrappeError as exc:
-        return _draft_result(question, str(frappe_failure(exc)), history, vault)
+        failure = frappe_failure(exc)
+        status = failure.status
+        outcome = "denied" if status == 403 else "failed"
+        return _draft_result(question, str(failure), history, vault)
     except MutationFailure as exc:
+        status = exc.status
+        outcome = "denied" if status == 403 else "invalid"
         return _draft_result(question, str(exc), history, vault)
+    finally:
+        if trace and outcome:
+            trace.record_tool("propose_mutation", {"doctype": doctype, "operation": operation}, outcome,
+                              round((time.monotonic() - started) * 1000, 2), status=status)
     answer = f"Review the proposed change below. Click Confirm {operation} to apply it or Discard to dismiss it."
     return _draft_result(question, answer, history, vault, proposal=prepared)
 

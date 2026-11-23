@@ -7,12 +7,14 @@ from app.agent.intent_router import localized, route_intent
 from app.agent.mutation_planner import plan_mutation
 from app.agent.query_rewriter import rewrite_query
 from app.agent.retriever import render_context, retrieve, use_read_context
+from app.agent.retry_handler import ReadRetry
 from app.auth.credentials import current_holder
 from app.auth.security import UserContext
 from app.core.agent import AgentResult, run_agent as run_tool_loop
 from app.core.llm.base import ImageData, LLMProvider, Message
 from app.core.masking import Vault
 from app.core.sites import current_site
+from app.core.turn_trace import current_trace
 from app.frappe_client.client import get_frappe_client
 from app.knowledge_packs.redactor import current_policy
 from app.tools.frappe_reads import READ_TOOLS
@@ -34,6 +36,9 @@ def run_agent(question: str, ctx: UserContext, history: list[Message] | None = N
     history = list(history or ())
     vault = vault if vault is not None else Vault()
     route = route_intent(question, has_image=bool(images))
+    trace = current_trace()
+    if trace:
+        trace.intent = route.kind
     if route.kind == "erp_write" and current_holder() is not None and current_site().write_doctypes:
         return plan_mutation(question, ctx, get_frappe_client(), history, vault, llm)
     if route.reply:
@@ -46,8 +51,14 @@ def run_agent(question: str, ctx: UserContext, history: list[Message] | None = N
 
     today = datetime.now(_DHAKA).date()
     rewritten = rewrite_query(vault.mask_typed(question), history, today)
+    if trace:
+        trace.date_range, trace.follow_up = rewritten.date_range, bool(rewritten.previous_topic)
     context = retrieve(current_site(), get_frappe_client(), ctx, rewritten.search_text)
+    if trace:
+        trace.retrieval(context)
     if context.denied_target:
+        if trace:
+            trace.error("retrieval", "denied")
         return _immediate(question, history, vault, localized("scope", question))
     if not (context.schemas or context.reports):
         return run_tool_loop(question, ctx, **arguments)
@@ -80,5 +91,5 @@ def run_agent(question: str, ctx: UserContext, history: list[Message] | None = N
     with use_read_context(context):
         return run_tool_loop(
             question, ctx, guidance=guidance, allowed_tools=tools | legacy,
-            contextual_tools=tools, **arguments,
+            contextual_tools=tools, read_retry=ReadRetry(context.schemas, context.reports), **arguments,
         )

@@ -48,7 +48,9 @@ def test_the_rules_are_numbered_without_gaps():
 
 def test_rule_7_and_rule_17_keep_their_agreed_content():
     found = rules()
-    assert "exactly as it appears" in found[7]
+    assert "numbers, dates, document IDs" in found[7]
+    assert "exactly as they appear" in found[7]
+    assert "Translate display labels and readable values" in found[7]
     assert "never do arithmetic in your head" in found[17].lower()
     assert "calculate" in found[17] and "pending_approval" in found[17]
 

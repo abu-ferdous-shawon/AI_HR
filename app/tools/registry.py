@@ -29,14 +29,28 @@ class Tool:
 _TOOLS: dict[str, Tool] = {}
 
 # How the last run_tool call ended: ok, denied, invalid, failed, unknown_tool.
-# Read once with take_outcome(). Only the audit log uses it; the model never sees it.
-_outcome: ContextVar[str | None] = ContextVar("tool_outcome", default=None)
+@dataclass(frozen=True)
+class ToolExecution:
+    kind: str | None = None
+    failure: FrappeError | None = None
+
+
+_outcome: ContextVar[ToolExecution] = ContextVar("tool_outcome", default=ToolExecution())
+
+
+def take_execution() -> ToolExecution:
+    execution = _outcome.get()
+    _outcome.set(ToolExecution())
+    return execution
 
 
 def take_outcome() -> str | None:
-    kind = _outcome.get()
-    _outcome.set(None)
-    return kind
+    return take_execution().kind
+
+
+def _finish(kind: str, payload: dict, failure: FrappeError | None = None) -> dict:
+    _outcome.set(ToolExecution(kind, failure))
+    return payload
 
 
 def tool(name: str, description: str, parameters: dict | None = None,
@@ -82,8 +96,7 @@ def run_tool(name: str, args: dict | None, ctx: UserContext) -> dict:
     """Run one tool safely. Always returns {'result': ...} or {'error': ...}."""
     selected = _TOOLS.get(name)
     if selected is None:
-        _outcome.set("unknown_tool")
-        return {"error": f"Unknown tool '{name}'."}
+        return _finish("unknown_tool", {"error": f"Unknown tool '{name}'."})
 
     # Keep only inputs the tool declared. Anything else is silently dropped.
     allowed = set(selected.parameters.get("properties", {}))
@@ -91,8 +104,7 @@ def run_tool(name: str, args: dict | None, ctx: UserContext) -> dict:
 
     try:
         if selected.hr_only and not is_hr_admin(ctx):
-            _outcome.set("denied")
-            return {"error": HR_ONLY_MESSAGE}
+            return _finish("denied", {"error": HR_ONLY_MESSAGE})
         if selected.input_model is not None:
             arguments = selected.input_model.model_validate(args or {}, strict=True)
             value = selected.func(ctx, arguments)
@@ -100,33 +112,25 @@ def run_tool(name: str, args: dict | None, ctx: UserContext) -> dict:
             value = selected.func(ctx, **clean)
         value = current_policy().sanitize(value)
         value = scrub(value, selected.allow)
-        _outcome.set("ok")
-        return {"result": value}
+        return _finish("ok", {"result": value})
     except AccessDenied as exc:
-        _outcome.set("denied")
-        return {"error": str(exc)}
+        return _finish("denied", {"error": str(exc)})
     except ToolInputError as exc:
-        _outcome.set("invalid")
-        return {"error": str(exc)}
+        return _finish("invalid", {"error": str(exc)})
     except ValidationError as exc:
-        _outcome.set("invalid")
         fields = ", ".join(dict.fromkeys(
             str(error["loc"][0]) for error in exc.errors(include_input=False)
             if error["loc"] and error["loc"][0] in allowed
         ))
-        return {"error": f"Invalid tool arguments. Check the input schema for: {fields or 'the request'}."}
+        return _finish("invalid", {"error": f"Invalid tool arguments. Check the input schema for: {fields or 'the request'}."})
     except FrappeError as exc:
         if selected.input_model is not None:
-            if exc.status_code in (401, 403):
-                _outcome.set("denied")
-                return {"error": "Frappe denied access to that record or report."}
+            if exc.status_code in (401, 403) or exc.error_type == "PermissionError":
+                return _finish("denied", {"error": "Frappe denied access to that record or report."}, exc)
             if exc.status_code in (400, 404, 417, 422):
-                _outcome.set("invalid")
-                return {"error": "Frappe rejected the request. Check the record ID, fields, and filters."}
-        _outcome.set("failed")
+                return _finish("invalid", {"error": "Frappe rejected the request. Check the record ID, fields, and filters."}, exc)
         log.warning("Frappe error in %s (HTTP %s)", name, exc.status_code)
-        return {"error": "The HR system could not complete this request."}
+        return _finish("failed", {"error": "The HR system could not complete this request."}, exc)
     except Exception as exc:
-        _outcome.set("failed")
         log.error("Unexpected error in tool %s (%s)", name, type(exc).__name__)
-        return {"error": "Something went wrong while running this tool."}
+        return _finish("failed", {"error": "Something went wrong while running this tool."})

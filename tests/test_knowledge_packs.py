@@ -152,7 +152,7 @@ def test_report_columns_dictionary_aliases_and_downloads_are_redacted(guard, mon
 
 def test_frappe_error_payload_is_not_exposed(guard, monkeypatch, caplog):
     client = FrappeClient()
-    response = SimpleNamespace(status_code=500, json=lambda: {"exception": DENIED_VALUE})
+    response = SimpleNamespace(status_code=500, content=b"", json=lambda: {"exception": DENIED_VALUE})
     monkeypatch.setattr(client.session, "get", lambda *args, **kwargs: response)
     monkeypatch.setattr(profile, "get_frappe_client", lambda: client)
 

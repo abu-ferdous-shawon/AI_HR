@@ -35,6 +35,8 @@ class ReadContext:
     denied_target: bool = False
     company: str | None = None
     guidance: list[dict] = field(default_factory=list)
+    matched_doctypes: list[str] = field(default_factory=list)
+    matched_reports: list[str] = field(default_factory=list)
 
 
 _ACTIVE: ContextVar[ReadContext | None] = ContextVar("frappe_read_context", default=None)
@@ -218,6 +220,8 @@ def retrieve(site: SiteConfig, client: FrappeClient, user: UserContext, query: s
         if embedding is not None and hasattr(embedding, "close"):
             embedding.close()
 
+    context.matched_doctypes = candidates
+    context.matched_reports = report_names
     for name in candidates:
         schema = manifest["schemas"].get(name)
         if not schema or schema["istable"]:
@@ -227,8 +231,9 @@ def retrieve(site: SiteConfig, client: FrappeClient, user: UserContext, query: s
                 context, schema, _pruned_fields(schema, ranked_fields.get(name, []), packs),
             )
         except FrappeError as exc:
-            if exc.status_code in (401, 403) and name in explicit and not report_exact:
+            if (exc.status_code in (401, 403) or exc.error_type == "PermissionError") and name in explicit and not report_exact:
                 context.denied_target = True
+                return context
 
     for name in report_names:
         report = manifest["reports"].get(name)
@@ -237,8 +242,9 @@ def retrieve(site: SiteConfig, client: FrappeClient, user: UserContext, query: s
         try:
             permission = client.call_method("frappe.desk.query_report.get_script", {"report_name": name})
         except FrappeError as exc:
-            if exc.status_code in (401, 403) and name in report_exact:
+            if (exc.status_code in (401, 403) or exc.error_type == "PermissionError") and name in report_exact:
                 context.denied_target = True
+                return context
             continue
         if isinstance(permission, dict) and not permission.get("custom_report_name"):
             context.reports[name] = report

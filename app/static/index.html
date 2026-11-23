@@ -15,6 +15,7 @@
       --bg:#0e1015; --panel:#1a1d26; --text:#e8eaf0; --muted:#98a0b3; --line:#2a2f3c;
       --accent:#6c8cff; --accent-text:#0e1220; --user:#3a58c9; --bot:#252a38;
       --err-bg:#3a1c1c; --err:#ff9a9a;
+      --voice-bg:#38323e; --voice-hover:#493f50; --voice-color:#f4edf6;
     }
   }
   * { box-sizing: border-box; }
@@ -53,9 +54,10 @@
 
   #messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
   #hint { margin: auto; text-align: center; color: var(--muted); max-width: 420px; }
-  .msg { max-width: 82%; padding: 10px 14px; border-radius: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .msg { flex-shrink: 0; max-width: 82%; padding: 10px 14px; border-radius: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .msg.user { align-self: flex-end; background: var(--user); color: #fff; border-bottom-right-radius: 4px; }
   .msg.bot { align-self: flex-start; background: var(--bot); border-bottom-left-radius: 4px; }
+  .msg.bot:not(.typing) { max-width: min(100%, 42rem); padding: 12px 16px; border: 1px solid var(--line); --reply-inset: var(--panel); }
   .msg.typing { color: var(--muted); font-style: italic; }
   .msg.error { align-self: center; background: var(--err-bg); color: var(--err); font-size: 14px; max-width: 92%; }
   .msg img { display: block; max-width: 180px; max-height: 140px; border-radius: 10px; margin-bottom: 6px; }
@@ -70,15 +72,17 @@
   .thumb button { position: absolute; top: -8px; right: -8px; padding: 0; width: 20px; height: 20px; border-radius: 50%; line-height: 1; font-size: 12px; }
 
   .composer { display: flex; gap: 8px; align-items: flex-end; padding: 12px 16px; border-top: 1px solid var(--line); }
-  textarea { flex: 1; resize: none; max-height: 140px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+  textarea { flex: 1; min-width: 0; resize: none; max-height: 140px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
   textarea:focus, select:focus, input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
   .composer button { padding: 10px 14px; border-radius: 12px; }
-  #mic.rec { background: #d93025; color: #fff; border-color: #d93025; }
-  #sttLang { padding: 8px 6px; }
+  #sttLang { padding: 8px 4px; font-size: .85rem; }
   .speakBtn { display: block; margin-top: 8px; font-size: 13px; padding: 4px 10px; }
   .mutation-card { margin-top:10px; padding:10px; border:1px solid var(--line, #d5dae4); border-radius:8px; }
   .mutation-field { margin-top:6px; font-size:.9em; }
   .mutation-status { margin-top:6px; font-size:.9em; }
+  .chat-debug { margin-top:8px; color:var(--muted); font-size:.85em; }
+  .chat-debug summary { cursor:pointer; }
+  .chat-debug pre { max-height:18rem; overflow:auto; padding:8px; border:1px solid var(--line); border-radius:6px; }
 </style>
 </head>
 <body>
@@ -88,6 +92,7 @@
     <span class="badge" id="devbadge" hidden title="Testing mode: you can chat as any employee">DEV</span>
     <div class="spacer"></div>
     <label id="whoWrap" hidden>Chat as <select id="who"></select></label>
+    <label id="debugWrap" hidden><input id="debug" type="checkbox"> Debug</label>
     <button id="signout" hidden>Sign out</button>
     <button id="newchat">New chat</button>
   </header>
@@ -100,7 +105,7 @@
     </div>
   </section>
 
-  <main id="messages">
+  <main id="messages" aria-live="polite">
     <div id="hint">Ask about your leave, attendance, holidays, salary slips, your profile or
       company HR policy, in English or বাংলায় or Banglish. Ask for a report to get an Excel file,
       or attach an image with the 📎 button.</div>
@@ -109,8 +114,7 @@
   <div id="thumbs" hidden></div>
   <div class="composer">
     <button id="attach" title="Attach images (max 3)">📎</button>
-    <button id="mic" title="Speak your question" hidden>🎤</button>
-    <select id="sttLang" title="Spoken language" hidden>
+    <select id="sttLang" aria-label="Spoken language" hidden>
       <option value="auto">Auto</option><option value="bn">বাংলা</option><option value="en">English</option>
     </select>
     <input type="file" id="file" accept="image/*" multiple hidden>
@@ -124,9 +128,23 @@
   const $ = (id) => document.getElementById(id);
   const msgs = $('messages'), hint = $('hint'), input = $('input'), sendBtn = $('send');
   const MAX_IMAGES = 3;
-  let convId = null, busy = false, devMode = false, pending = [];
+  let convId = null, busy = false, devMode = false, pending = [], chatVersion = 0;
+  const chatUi = import('/chat_message.js').then(format => {
+    format.installReplyStyles(document.head);
+    return format;
+  }).catch(() => null);
+  const replyRenderer = chatUi.then(format => format?.renderReply);
+  const welcome = chatUi.then(format => format?.createWelcome({
+    messages: msgs, hint, endpoint: '/chat/welcome', headers: authHeaders, onSessionEnd: sessionEnded,
+  }));
 
-  function addMsg(kind, text, images) {
+  function showWelcome() {
+    welcome.then(greeting => {
+      if (devMode ? $('who').value : token()) greeting?.show();
+    });
+  }
+
+  function addMsg(kind, content, images) {
     hint.hidden = true;
     const div = document.createElement('div');
     div.className = 'msg ' + kind;
@@ -135,7 +153,7 @@
       img.src = im.preview; img.alt = 'attached image';
       div.appendChild(img);
     }
-    div.appendChild(document.createTextNode(text));   // text only, never HTML
+    div.appendChild(typeof content === 'string' ? document.createTextNode(content) : content);
     msgs.appendChild(div);
     msgs.scrollTop = msgs.scrollHeight;
     return div;
@@ -187,65 +205,7 @@
     msgs.scrollTop = msgs.scrollHeight;
   }
 
-  // ---- voice: record -> 16 kHz WAV -> /stt ; answer -> /tts -> audio ----
-  let speechOn = false, rec = null, stream = null, chunks = [], autoStop = null, player = null;
-
-  function encodeWav(f32, rate) {
-    const buf = new ArrayBuffer(44 + f32.length * 2), v = new DataView(buf);
-    const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
-    w(0, 'RIFF'); v.setUint32(4, 36 + f32.length * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
-    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
-    v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true);
-    v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, f32.length * 2, true);
-    for (let i = 0; i < f32.length; i++) {
-      const s = Math.max(-1, Math.min(1, f32[i]));
-      v.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
-    }
-    return new Blob([buf], { type: 'audio/wav' });
-  }
-
-  async function toWav16k(blob) {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    let decoded;
-    try { decoded = await ctx.decodeAudioData(await blob.arrayBuffer()); } finally { ctx.close(); }
-    const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * 16000)), 16000);
-    const src = off.createBufferSource();
-    src.buffer = decoded; src.connect(off.destination); src.start();
-    return encodeWav((await off.startRendering()).getChannelData(0), 16000);
-  }
-
-  async function startRec() {
-    try { stream = await navigator.mediaDevices.getUserMedia({ audio: true }); }
-    catch (e) { addMsg('error', 'The microphone is blocked or unavailable (it needs HTTPS or localhost).'); return; }
-    chunks = []; rec = new MediaRecorder(stream);
-    rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-    rec.onstop = onRecStop;
-    rec.start();
-    $('mic').classList.add('rec'); $('mic').textContent = '⏹';
-    autoStop = setTimeout(stopRec, 55000);
-  }
-
-  function stopRec() {
-    clearTimeout(autoStop);
-    if (rec && rec.state !== 'inactive') rec.stop();
-    if (stream) stream.getTracks().forEach(t => t.stop());
-  }
-
-  async function onRecStop() {
-    $('mic').classList.remove('rec'); $('mic').textContent = '🎤';
-    const blob = new Blob(chunks, { type: rec.mimeType });
-    setBusy(true);
-    try {
-      const wav = await toWav16k(blob);
-      const res = await fetch('/stt?lang=' + encodeURIComponent($('sttLang').value), {
-        method: 'POST', headers: { 'Content-Type': 'audio/wav', ...authHeaders() }, body: wav });
-      let data = {};
-      try { data = await res.json(); } catch (e) {}
-      if (res.ok && data.text) { input.value = data.text; autosize(); }
-      else addMsg('error', typeof data.detail === 'string' ? data.detail : 'Voice input failed. Please try again.');
-    } catch (e) { addMsg('error', 'The recording could not be processed.'); }
-    setBusy(false);
-  }
+  let speechOn = false, voiceInput = null, player = null;
 
   function addSpeak(div, text) {
     if (!speechOn) return;
@@ -285,14 +245,23 @@
     }
   }
 
-  $('mic').addEventListener('click', () => (rec && rec.state === 'recording') ? stopRec() : startRec());
-
-  function resetChat() {
+  function resetChat(greet = true) {
+    chatVersion++;
+    welcome.then(greeting => greeting?.reset());
+    voiceInput?.cancel();
     stopSpeak();
     convId = null; pending = []; renderThumbs();
     msgs.replaceChildren(hint);
     hint.hidden = false;
     input.focus();
+    if (greet) showWelcome();
+  }
+
+  function sessionEnded() {
+    sessionStorage.removeItem('hr_token');
+    refreshUi();
+    resetChat(false);
+    addMsg('error', 'Your sign-in is not valid. Please sign in again.');
   }
 
   function token() { return sessionStorage.getItem('hr_token'); }
@@ -306,11 +275,12 @@
     $('whoWrap').hidden = !devMode;
     $('signin').hidden = devMode || !!token();
     $('signout').hidden = devMode || !token();
+    $('debugWrap').hidden = devMode || !token();
   }
 
   function setBusy(on) {
-    busy = on; sendBtn.disabled = on; input.disabled = on; $('attach').disabled = on;
-    $('mic').disabled = on;
+    busy = on; sendBtn.disabled = on || !!voiceInput?.active; input.disabled = on; $('attach').disabled = on;
+    voiceInput?.setChatBusy(on);
     if (!on) input.focus();
   }
 
@@ -363,11 +333,14 @@
   async function send() {
     let text = input.value.trim();
     if (!text && pending.length) text = 'Please look at the attached image.';
-    if (!text || busy) return;
+    if (!text || busy || voiceInput?.active) return;
     if (!devMode && !token()) { refreshUi(); $('token').focus(); return; }
 
     stopSpeak();
     const sending = pending;
+    const debug = $('debug').checked && !$('debugWrap').hidden;
+    const auth = authHeaders();
+    const version = chatVersion;
     pending = []; renderThumbs();
     setBusy(true);
     addMsg('user', text, sending);
@@ -377,19 +350,27 @@
     try {
       const res = await fetch('/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
+        headers: { 'Content-Type': 'application/json', ...auth },
         body: JSON.stringify({
-          message: text, conversation_id: convId,
+          message: text, conversation_id: convId, debug,
           images: sending.map(i => ({ mime_type: i.mime_type, data: i.data })),
         }),
       });
       let data = {};
       try { data = await res.json(); } catch (e) {}
+      const render = res.ok ? await replyRenderer : null;
       typing.remove();
+      const currentAuth = authHeaders();
+      if (chatVersion !== version || currentAuth.Authorization !== auth.Authorization
+          || currentAuth['X-Dev-Employee'] !== auth['X-Dev-Employee']) {
+        setBusy(false);
+        return;
+      }
 
       if (res.ok) {
         convId = data.conversation_id;
-        const div = addMsg('bot', data.answer);
+        const answer = data.answer || '';
+        const div = addMsg('bot', render ? render(answer) : answer);
         if (data.confirmation) {
           try {
             const { addConfirmation } = await import('/mutation_confirmation.js');
@@ -398,14 +379,23 @@
             addMsg('error', 'The confirmation card could not load. Start a new proposal.');
           }
         }
-        addSpeak(div, data.answer);
+        addSpeak(div, answer);
         if (data.confirmation) msgs.scrollTop = msgs.scrollHeight;
         if (data.files && data.files.length) addFiles(div, data.files);
-        if (data.pictures && data.pictures.length) showPictures(div, data.pictures);        
+        if (data.pictures && data.pictures.length) showPictures(div, data.pictures);
+        if (data.debug) {
+          const details = document.createElement('details'); details.className = 'chat-debug';
+          const summary = document.createElement('summary'); summary.textContent = 'Debug details';
+          const json = document.createElement('pre'); json.textContent = JSON.stringify(data.debug, null, 2);
+          details.append(summary, json); div.appendChild(details);
+        } else if (debug) {
+          const status = document.createElement('div'); status.className = 'chat-debug';
+          status.textContent = 'Debug details require the System Manager role.';
+          div.appendChild(status);
+        }
+        msgs.scrollTop = msgs.scrollHeight;
       } else if (res.status === 401) {
-        sessionStorage.removeItem('hr_token');
-        refreshUi();
-        addMsg('error', 'Your sign-in is not valid. Please sign in again.');
+        sessionEnded();
       } else if (res.status === 413) {
         addMsg('error', 'An image is too large. Please try a smaller one.');
       } else if (res.status === 422) {
@@ -416,7 +406,7 @@
       }
     } catch (e) {
       typing.remove();
-      addMsg('error', 'Cannot reach the server. Is it running?');
+      if (chatVersion === version) addMsg('error', 'Cannot reach the server. Is it running?');
     }
     setBusy(false);
   }
@@ -433,7 +423,7 @@
   sendBtn.addEventListener('click', send);
   $('attach').addEventListener('click', () => $('file').click());
   $('file').addEventListener('change', (e) => { addImages([...e.target.files]); e.target.value = ''; });
-  $('newchat').addEventListener('click', resetChat);
+  $('newchat').addEventListener('click', () => resetChat());
 
   $('signinBtn').addEventListener('click', () => {
     let t = $('token').value.trim();
@@ -445,7 +435,8 @@
   });
   $('signout').addEventListener('click', () => {
     sessionStorage.removeItem('hr_token');
-    refreshUi(); resetChat();
+    $('debug').checked = false;
+    refreshUi(); resetChat(false);
   });
   $('who').addEventListener('change', () => {
     sessionStorage.setItem('hr_dev_emp', $('who').value);
@@ -456,7 +447,21 @@
     try { devMode = !!(await (await fetch('/config')).json()).dev; } catch (e) {}
     try {
       speechOn = !!(await (await fetch('/speech/config')).json()).enabled;
-      $('mic').hidden = !speechOn; $('sttLang').hidden = !speechOn;
+      if (speechOn) {
+        const { mountVoiceInput } = await import('/voice_input.js');
+        voiceInput = mountVoiceInput({
+          styleRoot: document.head, before: sendBtn, input, endpoint: '/stt', headers: authHeaders,
+          language: () => $('sttLang').value,
+          canRecord: () => {
+            if (devMode || token()) { stopSpeak(); return true; }
+            refreshUi(); $('token').focus(); return false;
+          },
+          onActiveChange: active => { sendBtn.disabled = busy || active; },
+          onError: message => addMsg('error', message),
+        });
+        voiceInput.setChatBusy(busy);
+        $('sttLang').hidden = false;
+      }
     } catch (e) {}
     if (devMode) {
       try {
@@ -472,6 +477,7 @@
     }
     refreshUi();
     input.focus();
+    showWelcome();
   }
   init();
 </script>

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from app.config import settings
@@ -27,28 +27,31 @@ class UserContext:
     employee_id: str                   # the employee record linked to that login
     roles: tuple[str, ...] = ()        # the person's roles; empty = unknown, so no special access
     role_source: str = ""              # how the roles were found: session, key, mapping or none
+    display_name: str = field(default="", compare=False, repr=False)
 
 
 def build_context(user_id: str, employee_id: str,
-                  credentials: Credentials | None = None) -> UserContext:
+                  credentials: Credentials | None = None, *, display_name: str | None = None) -> UserContext:
     """A context for a known employee, with their roles looked up."""
     found = resolve_roles(employee_id, credentials)
     return UserContext(user_id=user_id, employee_id=employee_id,
-                       roles=found.roles, role_source=found.source)
+                       roles=found.roles, role_source=found.source,
+                       display_name=display_name.strip() if isinstance(display_name, str) else "")
 
 @for_purpose("identity")
 def resolve_context(user_id: str, credentials: Credentials | None = None) -> UserContext:
     """Turn a logged-in user into their one employee record and roles, or refuse."""
     cfg = get_profile().employee
     rows = get_service_client().get_list(
-        cfg.doctype, ["name"],
+        cfg.doctype, ["name", cfg.name_field],
         filters={cfg.user_field: user_id, cfg.status_field: cfg.active_value},
         limit=2,
     )
     # Exactly one match is required. Zero or several are both unsafe.
     if len(rows) != 1:
         raise AccessDenied("No active employee record is linked to this login.")
-    return build_context(user_id, rows[0]["name"], credentials)
+    return build_context(user_id, rows[0]["name"], credentials,
+                         display_name=rows[0].get(cfg.name_field))
 
 
 @for_purpose("team")

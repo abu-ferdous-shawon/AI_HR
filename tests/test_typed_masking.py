@@ -59,6 +59,8 @@ class EchoPlaceholder(LLMProvider):
     def generate(self, system_prompt, messages, tools=None):
         self.seen.append(repr(messages))
         token = re.search(r"\[\[MASK_\d+\]\]", messages[-1].text).group(0)
+        if tools is None:
+            return LLMResponse(text=f"আপনি {token} নম্বরটি দিয়েছেন।")
         return LLMResponse(text=f"Apni {token} number-ti diyechhen.")
 
 

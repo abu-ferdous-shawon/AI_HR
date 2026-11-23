@@ -20,12 +20,13 @@ from app.agent.orchestrator import run_agent
 from app.auth.frappe_session import identify_user
 from app.frappe_client.client import FrappeError, enforce_user_login, get_frappe_client
 from app.core.llm.base import ImageData, LLMBusy, LLMError, Message
+from app.core.answer_text import strip_source_references
 from app.core.masking import Vault
 from app.core import audit, gateway, sites
 from app.core.hardening import OriginGuard, assert_safe_config, docs_settings, parse_origins
 from app.core.reports import get_report
 from app.auth.credentials import Credentials, extract_credentials, use_credentials
-from app.auth.security import AccessDenied, UserContext, build_context, resolve_context
+from app.auth.security import AccessDenied, UserContext, build_context, has_role, resolve_context
 from app.core.media import get_picture
 from app.core import speech
 from starlette.concurrency import run_in_threadpool
@@ -33,6 +34,7 @@ from app.registry import get_profile
 from app.registry.review import masking_review
 from app.tools.registry import load_all_tools
 from app.core.secret_store import PLAINTEXT_SEEN
+from app.core.turn_trace import TurnTrace, capture_turn
 from app.knowledge_packs.loader import active_packs
 from app.mutations.confirmation import bind, confirmations, execute_mutation
 from app.mutations.service import MutationFailure, Operation
@@ -129,17 +131,19 @@ def current_user(request: Request,
                  x_dev_employee: str | None = Header(default=None)) -> UserContext:
     # Testing shortcut (see above). Skipped unless dev mode is active.
     if x_dev_employee and _dev_active(request):
+        cfg = get_profile().employee
         try:
             with use_credentials(None):      # dev shortcut: the service account, on purpose
                 rows = get_frappe_client().get_list(
-                    "Employee", ["name"],
-                    filters={"name": x_dev_employee, "status": "Active"}, limit=1)
+                    cfg.doctype, ["name", cfg.name_field],
+                    filters={"name": x_dev_employee, cfg.status_field: cfg.active_value}, limit=1)
         except FrappeError as exc:
             log.warning("Dev employee lookup failed: %s", exc)
             raise HTTPException(status_code=503, detail="The HR system is not reachable right now.")
         if not rows:
             raise HTTPException(status_code=403, detail="Unknown or inactive employee.")
-        return build_context(f"dev:{rows[0]['name']}", rows[0]["name"])
+        return build_context(f"dev:{rows[0]['name']}", rows[0]["name"],
+                             display_name=rows[0].get(cfg.name_field))
 
     # The real path: ask Frappe who these credentials belong to.
     ip = gateway.client_ip(request) if request is not None else "unknown"
@@ -226,6 +230,14 @@ def home():
     return FileResponse(STATIC_DIR / "index.html", headers=PAGE_HEADERS)
 
 
+@app.get("/widget-preview", include_in_schema=False)
+def widget_preview(request: Request):
+    peer = request.client.host if request.client else None
+    if settings.environment.strip().lower() == "production" or peer not in gateway.LOCAL or gateway.is_proxied(request):
+        raise HTTPException(status_code=404)
+    return FileResponse(STATIC_DIR / "widget_preview.html", headers=PAGE_HEADERS)
+
+
 @app.get("/ai_chat.js", include_in_schema=False)
 def widget_script():
     """The chat widget. Public on purpose: it holds no data and no secrets."""
@@ -239,9 +251,26 @@ def mutation_confirmation_script():
                         headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-cache"})
 
 
+@app.get("/chat_message.js", include_in_schema=False)
+def chat_message_script():
+    return FileResponse(STATIC_DIR / "chat_message.js", media_type="application/javascript",
+                        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-cache"})
+
+
+@app.get("/voice_input.js", include_in_schema=False)
+def voice_input_script():
+    return FileResponse(STATIC_DIR / "voice_input.js", media_type="application/javascript",
+                        headers={"X-Content-Type-Options": "nosniff", "Cache-Control": "no-cache"})
+
+
 @app.get("/config", include_in_schema=False)
 def page_config(request: Request):
     return {"dev": _dev_active(request)}
+
+
+@app.get("/chat/welcome", include_in_schema=False)
+def chat_welcome(ctx: UserContext = Depends(current_user)):
+    return {"display_name": ctx.display_name}
 
 
 @app.get("/dev/employees", include_in_schema=False)
@@ -302,6 +331,7 @@ class ChatRequest(BaseModel):
     conversation_id: str | None = Field(default=None, max_length=64,
                                         pattern=r"^[A-Za-z0-9_-]+$")
     images: list[ImageIn] = Field(default_factory=list, max_length=3)
+    debug: bool = False
 
 
 class FileInfo(BaseModel):
@@ -347,12 +377,24 @@ class MutationResult(BaseModel):
     answer: str
 
 
+class ChatDebug(BaseModel):
+    session_id: str
+    rewritten_query: dict[str, JsonValue]
+    schemas: dict[str, list[dict[str, JsonValue]]]
+    reports: dict[str, list[dict[str, JsonValue]]]
+    tool_calls: list[dict[str, JsonValue]]
+    retry_count: int
+    latency_ms: int
+    error_trace: list[dict[str, JsonValue]]
+
+
 class ChatResponse(BaseModel):
     answer: str
     conversation_id: str
     files: list[FileInfo] = Field(default_factory=list)
     pictures: list[PictureInfo] = Field(default_factory=list)
     confirmation: MutationCard | None = Field(default=None, exclude_if=lambda value: value is None)
+    debug: ChatDebug | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
 _PROPOSAL_REPLIES = {"reviewed", "i reviewed it", "confirm", "yes confirm", "yes", "discard"}
@@ -366,18 +408,35 @@ def health():
 # A plain "def" (not async): FastAPI runs it in a worker thread, so one slow
 # model call does not freeze the other users' requests.
 def _audit_chat(request: Request, ctx: UserContext, cid: str, body: ChatRequest,
-                image_count: int, status: str, started: float, result=None) -> None:
-    """One audit line per chat. The message text itself is never logged."""
+                image_count: int, status: str, started: float, trace: TurnTrace, result=None) -> int:
+    """One audit line per chat, including a structural summary of the rewritten query."""
+    latency_ms = round((time.monotonic() - started) * 1000)
+    if status != "ok":
+        trace.error("chat", status)
+    calls = trace.tool_calls or [audit.tool_entry(t) for t in (result.tool_log if result else [])]
     audit.record(
         "chat", request_id=getattr(request.state, "request_id", "-"),
         ip=gateway.client_ip(request), site=sites.current_site().name,
         user=ctx.user_id, employee=ctx.employee_id,
-        roles=list(ctx.roles), role_source=ctx.role_source, conversation=cid,
-        status=status, duration_ms=round((time.monotonic() - started) * 1000),
+        roles=list(ctx.roles), role_source=ctx.role_source, conversation=cid, session_id=cid,
+        status=status, duration_ms=latency_ms, latency_ms=latency_ms,
         message_chars=len(body.message), images=image_count,
-        tools=[audit.tool_entry(t) for t in (result.tool_log if result else [])],
+        rewritten_query=trace.query_summary(), matched_doctypes=trace.matched_doctypes,
+        matched_reports=trace.matched_reports, tools=calls, tool_calls=calls,
+        retry_count=trace.retry_count, error_trace=trace.error_trace,
         files=len(result.files) if result else 0,
         pictures=len(result.pictures) if result else 0)
+    return latency_ms
+
+
+def _chat_debug(body: ChatRequest, ctx: UserContext, own_login: Credentials | None,
+                cid: str, trace: TurnTrace, latency_ms: int) -> ChatDebug | None:
+    if not (body.debug and own_login and ctx.role_source in {"session", "key"}
+            and has_role(ctx, ("System Manager",))):
+        return None
+    return ChatDebug(session_id=cid, rewritten_query=trace.query_summary(verified_only=True),
+                     schemas=trace.schemas, reports=trace.reports, tool_calls=trace.tool_calls,
+                     retry_count=trace.retry_count, latency_ms=latency_ms, error_trace=trace.error_trace)
 
 
 # A plain "def" (not async): FastAPI runs it in a worker thread, so one slow
@@ -387,20 +446,21 @@ def chat(request: Request, body: ChatRequest, ctx: UserContext = Depends(current
          creds: Credentials | None = Depends(request_credentials)):
     started = time.monotonic()
     cid = body.conversation_id or uuid.uuid4().hex
+    trace = TurnTrace()
     if (settings.frappe_auth_mode == "user_session" and not _is_dev(ctx)
             and creds is None):      # a real login we cannot forward: refuse, never downgrade
         _auth_audit(request, gateway.client_ip(request), 401, "no_usable_credentials")
         raise HTTPException(status_code=401, detail="Your sign-in is not valid.")
     wait = gateway.chat_limiter.hit(ctx.user_id)
     if wait:
-        _audit_chat(request, ctx, cid, body, 0, "rate_limited", started)
+        _audit_chat(request, ctx, cid, body, 0, "rate_limited", started, trace)
         raise HTTPException(status_code=429, detail=gateway.wait_message(wait),
                             headers={"Retry-After": str(wait)})
     try:
         images = decode_images(body.images)
     except HTTPException as exc:
         _audit_chat(request, ctx, cid, body, len(body.images),
-                    f"rejected_{exc.status_code}", started)
+                    f"rejected_{exc.status_code}", started, trace)
         raise
     own_login = creds if settings.frappe_auth_mode == "user_session" and not _is_dev(ctx) else None
     reply = " ".join(body.message.casefold().strip().rstrip(".!").replace(",", " ").split())
@@ -408,10 +468,13 @@ def chat(request: Request, body: ChatRequest, ctx: UserContext = Depends(current
         pending = confirmations.pending_card(bind(ctx, cid, own_login))
         if pending is not None:
             card = MutationCard(**pending)
-            _audit_chat(request, ctx, cid, body, 0, "ok", started)
+            trace.intent = "confirmation"
+            trace.matched_doctypes = [card.doctype]
+            latency = _audit_chat(request, ctx, cid, body, 0, "ok", started, trace)
             return ChatResponse(
                 answer=f"Click Confirm {card.operation} below to apply the change or Discard to dismiss it.",
                 conversation_id=cid, confirmation=card,
+                debug=_chat_debug(body, ctx, own_login, cid, trace, latency),
             )
     key = (sites.current_site().name, ctx.user_id, cid)  # tied to site and user  # tied to the user, so IDs cannot be borrowed
 
@@ -419,36 +482,41 @@ def chat(request: Request, body: ChatRequest, ctx: UserContext = Depends(current
         saved = _store.get(key)
     history, vault = (list(saved[0]), saved[1]) if saved else ([], None)
     try:
-        with use_credentials(own_login):
+        with use_credentials(own_login), capture_turn(trace):
             result = run_agent(body.message, ctx, history=history, vault=vault, images=images)
-    except LLMBusy as exc:
-        log.warning("LLM busy for %s: %s", ctx.user_id, exc)
-        _audit_chat(request, ctx, cid, body, len(images), "llm_busy", started)
+    except LLMBusy:
+        log.warning("LLM busy for %s", ctx.user_id)
+        _audit_chat(request, ctx, cid, body, len(images), "llm_busy", started, trace)
         raise HTTPException(status_code=503,
                             detail="The assistant is busy right now. Please try again in a minute.")
-    except LLMError as exc:
-        log.error("LLM failure for %s: %s", ctx.user_id, exc)
-        _audit_chat(request, ctx, cid, body, len(images), "llm_error", started)
+    except LLMError:
+        log.error("LLM failure for %s", ctx.user_id)
+        _audit_chat(request, ctx, cid, body, len(images), "llm_error", started, trace)
         raise HTTPException(status_code=503,
                             detail="The assistant is unavailable right now. Please try again.")
+    except Exception:
+        _audit_chat(request, ctx, cid, body, len(images), "internal_error", started, trace)
+        raise
     with _lock:
         _store[key] = (trim(result.messages), result.vault)
         _store.move_to_end(key)
         while len(_store) > MAX_CONVERSATIONS:
             _store.popitem(last=False)
 
-    _audit_chat(request, ctx, cid, body, len(images), "ok", started, result)
     card = None
     if result.mutation:
         try:
             card = MutationCard(**confirmations.issue(bind(ctx, cid, own_login), result.mutation))
         except MutationFailure as exc:
+            _audit_chat(request, ctx, cid, body, len(images), "proposal_rejected", started, trace, result)
             raise HTTPException(status_code=exc.status, detail=str(exc)) from None
         audit.record("mutation", decision="propose", state="pending", site=sites.current_site().name,
                      user=ctx.user_id, conversation=cid, operation=card.operation, doctype=card.doctype)
-    return ChatResponse(answer=result.answer, conversation_id=cid, confirmation=card,
+    latency = _audit_chat(request, ctx, cid, body, len(images), "ok", started, trace, result)
+    return ChatResponse(answer=strip_source_references(result.answer), conversation_id=cid, confirmation=card,
                         files=[FileInfo(**f) for f in result.files],
-                        pictures=[PictureInfo(**p) for p in result.pictures])
+                        pictures=[PictureInfo(**p) for p in result.pictures],
+                        debug=_chat_debug(body, ctx, own_login, cid, trace, latency))
 
 
 @app.post("/chat/confirm", response_model=MutationResult)

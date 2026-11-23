@@ -143,14 +143,15 @@ def test_the_dev_shortcut_resolves_roles_without_credentials(monkeypatch):
 
     class Directory:
         def get_list(self, *args, **kwargs):
-            return [{"name": "HR-EMP-00004"}]
+            return [{"name": "HR-EMP-00004", "employee_name": "Test Employee"}]
 
-    def fake_build(user_id, employee_id, credentials=None):
-        seen.update(user=user_id, employee=employee_id, credentials=credentials)
+    def fake_build(user_id, employee_id, credentials=None, *, display_name=None):
+        seen.update(user=user_id, employee=employee_id, credentials=credentials, display_name=display_name)
         return DEV
 
     monkeypatch.setattr(main, "_dev_active", lambda request: True)
     monkeypatch.setattr(main, "get_frappe_client", lambda: Directory())
     monkeypatch.setattr(main, "build_context", fake_build)
     assert main.current_user(None, None, None, "HR-EMP-00004") is DEV
-    assert seen == {"user": "dev:HR-EMP-00004", "employee": "HR-EMP-00004", "credentials": None}
+    assert seen == {"user": "dev:HR-EMP-00004", "employee": "HR-EMP-00004", "credentials": None,
+                    "display_name": "Test Employee"}

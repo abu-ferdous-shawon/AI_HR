@@ -1,9 +1,8 @@
-"""Decides which language and script the reply should use.
-
-A small model sometimes answers a Bangla question in Banglish, or the other way
-round. A one-line hint decided from the question's letters removes the guess.
-"""
+"""Decide the language and script of a human-facing reply."""
 import re
+from typing import Literal
+
+Language = Literal["bangla", "banglish", "other"]
 
 # Common Banglish (Bangla in English letters) words. Add words your colleagues use.
 BANGLISH_WORDS = {
@@ -12,29 +11,35 @@ BANGLISH_WORDS = {
     "dao", "den", "bolo", "bolen", "chai", "chuti", "chhuti", "jonno", "theke",
     "porjonto", "hobe", "hoy", "thakbe", "niyechi", "nibo", "nite", "niye", "korbo",
     "korte", "lagbe", "pabo", "pai", "jodi", "tahole", "ebong", "sob", "mot", "hishab",
-    "beton", "maina", "thikana", "chobi", "tarikh", "er",
+    "beton", "maina", "thikana", "chobi", "tarikh", "er", "chhutir", "thik",
 }
+_BANGLISH_COMMANDS = {"dekhao", "dekhan", "bolen", "janan"}
+_BANGLA_QUERY_WORDS = frozenset({
+    "আমার", "আমাকে", "আমি", "দেখাও", "দেখান", "বলুন", "বলো", "জানান", "কত", "কয়টি", "কয়টি",
+    "কেমন", "কেন", "কবে", "কোন", "কী", "কি", "আছে", "করুন", "করো", "চাই", "দিন", "দাও",
+})
 
 HINTS = {
-    "bangla": ("LANGUAGE FOR THIS REPLY: the person wrote in Bangla script. Reply in "
-               "Bangla script (বাংলা অক্ষরে). Common HR words such as leave, attendance "
-               "and salary slip may stay in English. Do not write Bangla words in "
-               "English letters."),
-    "banglish": ("LANGUAGE FOR THIS REPLY: the person wrote Banglish (Bangla in English "
-                 "letters). Reply in Banglish, using English letters only. Do not use "
-                 "Bangla script."),
+    "bangla": ("Write the entire human-facing reply in natural Bangla script. Translate "
+               "DocType names, labels and readable field values, including leave types and statuses. "
+               "For example: Casual Leave = নৈমিত্তিক ছুটি, Annual Leave = বার্ষিক ছুটি, "
+               "Approved = অনুমোদিত. Transcribe people's and organizations' display names in Bangla script."),
+    "banglish": ("Write the human-facing reply in natural Banglish (Bangla in Latin letters). "
+                 "Translate DocType names, labels and readable field values into that style. "
+                 "For example: Casual Leave = Noimittik chhuti, Approved = Onumodito. Use Latin letters."),
 }
 
 
-def detect_language(text: str) -> str:
+def detect_language(text: str) -> Language:
     """Returns 'bangla', 'banglish' or 'other'."""
     # Bangla letters and vowel signs, not the Bangla digits ০-৯
     bangla = sum(1 for ch in text if "\u0980" <= ch <= "\u09ff" and not "০" <= ch <= "৯")
     latin = sum(1 for ch in text if ch.isascii() and ch.isalpha())
-    if bangla >= 3 and bangla * 2 >= latin:
+    bangla_words = re.findall(r"[\u0980-\u09e5]+", text)
+    if bangla and (not latin or bangla * 2 >= latin or _BANGLA_QUERY_WORDS.intersection(bangla_words)):
         return "bangla"
     words = re.findall(r"[a-z]+", text.lower())
-    if sum(1 for word in words if word in BANGLISH_WORDS) >= 2:
+    if _BANGLISH_COMMANDS.intersection(words) or sum(1 for word in words if word in BANGLISH_WORDS) >= 2:
         return "banglish"
     return "other"
 

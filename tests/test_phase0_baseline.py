@@ -48,10 +48,10 @@ def test_tool_names_baseline():
 
 def test_chat_response_contract():
     assert set(main.ChatResponse.model_fields) == {
-        "answer", "conversation_id", "files", "pictures", "confirmation"}
+        "answer", "conversation_id", "files", "pictures", "confirmation", "debug"}
     assert set(main.ChatResponse(answer="OK", conversation_id="read_only").model_dump()) == {
         "answer", "conversation_id", "files", "pictures"}
-    assert set(main.ChatRequest.model_fields) == {"message", "conversation_id", "images"}
+    assert set(main.ChatRequest.model_fields) == {"message", "conversation_id", "images", "debug"}
 
 
 @pytest.fixture

@@ -157,14 +157,21 @@ def test_report_calls_frappe_with_the_current_session_and_masks_positional_amoun
     assert result.tool_log[0]["tool"] == "run_frappe_report"
 
 
-@pytest.mark.parametrize(("status", "attempts", "reply"), [(403, 1, "denied access"), (417, 3, "check the record ID")])
-def test_no_retry_on_denial_and_two_corrections_on_invalid_queries(monkeypatch, status, attempts, reply):
+@pytest.mark.parametrize(("status", "error_type", "attempts", "reply"), [
+    (403, "PermissionError", 1, "denied access"),
+    (417, "PermissionError", 1, "denied access"),
+    (417, "ValidationError", 3, "check the record ID"),
+    (417, "", 1, "check the record ID"),
+    (404, "DoesNotExistError", 1, "check the record ID"),
+    (500, "OperationalError", 1, "could not complete"),
+])
+def test_only_correctable_errors_are_retried(monkeypatch, status, error_type, attempts, reply):
     client = FrappeClient(credentials=TOKEN)
     calls = []
 
     def fetch(path, params):
         calls.append(path)
-        raise FrappeError(status, "upstream details")
+        raise FrappeError(status, "upstream details", error_type=error_type)
 
     monkeypatch.setattr(client, "_get", fetch)
     monkeypatch.setattr(orchestrator, "retrieve", lambda *args: ReadContext(

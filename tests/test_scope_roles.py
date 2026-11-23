@@ -146,7 +146,7 @@ def test_a_context_is_built_with_the_resolved_roles(monkeypatch):
 
 
 class Directory:
-    rows = [{"name": "E5"}]
+    rows = [{"name": "E5", "employee_name": " Ann Test "}]
 
     def get_list(self, doctype, fields=None, filters=None, order_by=None, limit=20, start=0):
         self.filters = filters
@@ -160,6 +160,7 @@ def test_resolve_context_finds_one_employee_and_their_roles(monkeypatch):
                         lambda employee_id, credentials=None: RoleResult(("Employee",), "session"))
     ctx = security.resolve_context("ann@x.com")
     assert (ctx.employee_id, ctx.roles, ctx.role_source) == ("E5", ("Employee",), "session")
+    assert ctx.display_name == "Ann Test"
     assert directory.filters == {"user_id": "ann@x.com", "status": "Active"}
 
 

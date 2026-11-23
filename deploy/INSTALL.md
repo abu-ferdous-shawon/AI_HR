@@ -412,3 +412,34 @@ the backend checks the record immediately before calling it.
 ```bash
 .venv/bin/python -m pytest -q tests/test_mutations.py
 ```
+
+## Phase 6 query correction and chat diagnostics
+
+Run the local backend in `user_session` mode with the site, index, embedding,
+and knowledge pack settings from the [Phase 4 setup](#phase-4-permission-scoped-chat-reads).
+
+1. In local chat, sign in as an active employee whose Frappe user has the
+   **System Manager** role. Enable **Debug** in the chat header. The same
+   control is available in the Desk widget.
+2. Ask for a populated record list or indexed report this account can read.
+   Open **Debug details** below the reply. Check the retrieved fields,
+   redacted tool arguments, tool timings, total latency, and retry count.
+   A successful first attempt has `retry_count: 0`.
+3. Disable **Debug**, then send another message. The new response omits the
+   `debug` object. The backend still writes its turn audit. You can also try
+   the toggle with a regular employee login and verify it exposes no details.
+4. Check the latest `chat` entries in `logs/audit.jsonl` or the file set by
+   `AUDIT_LOG_FILE`. Match `session_id` to the conversation ID. The
+   `rewritten_query` records the intent, resolved date range, and matched
+   targets. `error_trace` records stage, outcome, and upstream status when
+   available. The trace omits free-text queries, filter values, record
+   contents, and raw Frappe errors.
+
+Chat can make up to two correction attempts for schema and filter errors
+in record lists, aggregations, and named reports. Frappe permission denials
+stop the read immediately. The tests simulate Frappe error responses so you
+can verify recovery, attempt limits, and redaction without changing live data.
+
+```bash
+.venv/bin/python -m pytest -q tests/test_tools_and_retry.py tests/test_phase4_reads.py tests/test_audit.py
+```

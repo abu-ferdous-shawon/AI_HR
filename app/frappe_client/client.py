@@ -20,6 +20,9 @@ MAX_LIMIT = 200
 MAX_FILE_BYTES = 5 * 1024 * 1024   # largest picture we will download
 FIELD_NAME = re.compile(r"[A-Za-z_][A-Za-z_0-9]*")
 ORDER_FIELD = re.compile(r"([A-Za-z_][A-Za-z_0-9]*)(?:\s+(?:asc|desc))?", re.IGNORECASE)
+VALIDATION_ERRORS = frozenset({"ValidationError", "MandatoryError", "DataError", "InvalidFilterOperator",
+                               "InvalidFieldNameError", "InvalidDateError"})
+DATABASE_ERRORS = frozenset({"ProgrammingError", "OperationalError", "UndefinedColumn"})
 STANDARD_COLUMNS = ("name", "owner", "creation", "modified", "modified_by", "docstatus", "idx")
 DISPLAY_FIELD_TYPES = frozenset({
     "Section Break", "Column Break", "Tab Break", "HTML", "Fold", "Heading",
@@ -31,11 +34,45 @@ NON_COLUMN_TYPES = DISPLAY_FIELD_TYPES | {"Table", "Table MultiSelect", "Passwor
 class FrappeError(Exception):
     """Raised when Frappe cannot be reached or returns an error."""
 
-    def __init__(self, status_code: int, message: str, *, error_type: str = ""):
+    def __init__(self, status_code: int, message: str, *, error_type: str = "",
+                 details: tuple[str, ...] = ()):
         super().__init__(f"Frappe error {status_code}: {message}")
         self.status_code = status_code  # 0 means we never got a reply
         self.message = message
         self.error_type = error_type
+        self.details = details  # Untrusted text for validation diagnostics only. Never log it.
+
+
+def _read_error(response: requests.Response) -> FrappeError:
+    status = response.status_code
+    body = {}
+    if len(response.content) <= 32_768:
+        try:
+            parsed = response.json()
+            if isinstance(parsed, dict):
+                body = parsed
+        except ValueError:
+            pass
+    kind = body.get("exc_type")
+    if not isinstance(kind, str) or len(kind) > 64 or not FIELD_NAME.fullmatch(kind):
+        kind = ""
+    details = []
+    if status in (400, 417, 422) or (status == 500 and kind in DATABASE_ERRORS):
+        details.extend(body.get(key) for key in ("_error_message", "message", "exception"))
+        try:
+            messages = json.loads(body.get("_server_messages") or "[]")
+        except (TypeError, ValueError):
+            messages = []
+        if isinstance(messages, list):
+            for item in messages[:8]:
+                try:
+                    entry = json.loads(item)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(entry, dict):
+                    details.append(entry.get("message"))
+    return FrappeError(status, "request failed", error_type=kind,
+                       details=tuple(item for item in details if isinstance(item, str) and 0 < len(item) <= 400))
 
 class UserLoginRequired(FrappeError):
     """A data read had no user login and did not choose the service account."""
@@ -99,8 +136,7 @@ class FrappeClient:
             raise FrappeError(401, "the HR system redirected the request "
                                    "(the login may have expired)")
         if response.status_code >= 400:
-            # Error bodies can echo submitted values or a raw database error.
-            raise FrappeError(response.status_code, "request failed")
+            raise _read_error(response)
 
         try:
             return response.json()
