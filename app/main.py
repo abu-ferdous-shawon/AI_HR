@@ -219,7 +219,7 @@ def trim(messages: list[Message]) -> list[Message]:
 PAGE_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; img-src 'self' data: blob:; "
                                "style-src 'self' 'unsafe-inline'; "
-                               "script-src 'self' 'unsafe-inline'; media-src 'self' blob:",
+                               "script-src 'self' 'unsafe-inline'",
     "Permissions-Policy": "microphone=(self)",
     "X-Content-Type-Options": "nosniff",
 }
@@ -564,10 +564,7 @@ def show_picture(request: Request,
                              "X-Content-Type-Options": "nosniff"})
 
 
-# ---------- speech ----------
-
-class TtsRequest(BaseModel):
-    text: str = Field(min_length=1, max_length=2000)
+# ---------- speech recognition ----------
 
 
 def _speech_guard(ctx: UserContext) -> None:
@@ -604,19 +601,3 @@ async def stt(request: Request, lang: Literal["auto", "bn", "en"] = "auto",
         raise HTTPException(status_code=503, detail="Voice input is unavailable right now.")
     log.info("user=%s stt bytes=%d chars=%d", ctx.user_id, len(data), len(text))
     return {"text": text}
-
-
-@app.post("/tts")
-def tts(body: TtsRequest, ctx: UserContext = Depends(current_user)):
-    _speech_guard(ctx)
-    try:
-        audio = speech.synthesize(body.text)
-    except speech.SpeechInputError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-    except speech.SpeechError as exc:
-        log.error("TTS failure for %s: %s", ctx.user_id, exc)
-        raise HTTPException(status_code=503, detail="Voice output is unavailable right now.")
-    log.info("user=%s tts chars=%d bytes=%d", ctx.user_id, len(body.text), len(audio))
-    return Response(content=audio, media_type="audio/wav",
-                    headers={"Cache-Control": "private, no-store",
-                             "X-Content-Type-Options": "nosniff"})

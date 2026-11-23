@@ -76,7 +76,6 @@
   textarea:focus, select:focus, input:focus { outline: 2px solid var(--accent); outline-offset: 0; }
   .composer button { padding: 10px 14px; border-radius: 12px; }
   #sttLang { padding: 8px 4px; font-size: .85rem; }
-  .speakBtn { display: block; margin-top: 8px; font-size: 13px; padding: 4px 10px; }
   .mutation-card { margin-top:10px; padding:10px; border:1px solid var(--line, #d5dae4); border-radius:8px; }
   .mutation-field { margin-top:6px; font-size:.9em; }
   .mutation-status { margin-top:6px; font-size:.9em; }
@@ -205,51 +204,12 @@
     msgs.scrollTop = msgs.scrollHeight;
   }
 
-  let speechOn = false, voiceInput = null, player = null;
-
-  function addSpeak(div, text) {
-    if (!speechOn) return;
-    const b = document.createElement('button');
-    b.className = 'speakBtn'; b.textContent = '🔊 Listen';
-    b.addEventListener('click', () => speak(b, text));
-    div.appendChild(b);
-  }
-
-  let playingBtn = null, speakToken = 0;
-
-  function stopSpeak() {
-    speakToken++;                                  // also cancels a request still loading
-    if (player) { player.pause(); player = null; }
-    if (playingBtn) { playingBtn.textContent = '🔊 Listen'; playingBtn = null; }
-  }
-
-  async function speak(btn, text) {
-    if (playingBtn === btn) { stopSpeak(); return; }   // second click = stop
-    stopSpeak();
-    const mine = speakToken;
-    playingBtn = btn; btn.textContent = '⏹ Stop';
-    try {
-      const res = await fetch('/tts', { method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({ text: text.slice(0, 2000) }) });
-      if (!res.ok) throw new Error('tts');
-      const blob = await res.blob();
-      if (mine !== speakToken) return;                 // stopped while loading
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      player = audio;
-      audio.onended = () => { URL.revokeObjectURL(url); if (player === audio) stopSpeak(); };
-      await audio.play();
-    } catch (e) {
-      if (mine === speakToken) { stopSpeak(); addMsg('error', 'Could not play the answer.'); }
-    }
-  }
+  let voiceInput = null;
 
   function resetChat(greet = true) {
     chatVersion++;
     welcome.then(greeting => greeting?.reset());
     voiceInput?.cancel();
-    stopSpeak();
     convId = null; pending = []; renderThumbs();
     msgs.replaceChildren(hint);
     hint.hidden = false;
@@ -336,7 +296,6 @@
     if (!text || busy || voiceInput?.active) return;
     if (!devMode && !token()) { refreshUi(); $('token').focus(); return; }
 
-    stopSpeak();
     const sending = pending;
     const debug = $('debug').checked && !$('debugWrap').hidden;
     const auth = authHeaders();
@@ -379,8 +338,6 @@
             addMsg('error', 'The confirmation card could not load. Start a new proposal.');
           }
         }
-        addSpeak(div, answer);
-        if (data.confirmation) msgs.scrollTop = msgs.scrollHeight;
         if (data.files && data.files.length) addFiles(div, data.files);
         if (data.pictures && data.pictures.length) showPictures(div, data.pictures);
         if (data.debug) {
@@ -446,14 +403,13 @@
   async function init() {
     try { devMode = !!(await (await fetch('/config')).json()).dev; } catch (e) {}
     try {
-      speechOn = !!(await (await fetch('/speech/config')).json()).enabled;
-      if (speechOn) {
+      if ((await (await fetch('/speech/config')).json()).enabled) {
         const { mountVoiceInput } = await import('/voice_input.js');
         voiceInput = mountVoiceInput({
           styleRoot: document.head, before: sendBtn, input, endpoint: '/stt', headers: authHeaders,
           language: () => $('sttLang').value,
           canRecord: () => {
-            if (devMode || token()) { stopSpeak(); return true; }
+            if (devMode || token()) return true;
             refreshUi(); $('token').focus(); return false;
           },
           onActiveChange: active => { sendBtn.disabled = busy || active; },
