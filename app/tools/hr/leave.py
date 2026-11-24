@@ -1,8 +1,8 @@
 import datetime
 from collections import defaultdict
 
-from app.core.frappe_client import get_frappe_client
-from app.core.security import UserContext
+from app.frappe_client.client import get_frappe_client
+from app.auth.security import UserContext
 from app.tools.common import resolve_range
 from app.tools.registry import tool
 

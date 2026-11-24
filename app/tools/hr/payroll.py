@@ -1,8 +1,8 @@
 import calendar
 import datetime
 
-from app.core.frappe_client import get_frappe_client
-from app.core.security import UserContext
+from app.frappe_client.client import get_frappe_client
+from app.auth.security import UserContext
 from app.tools.common import to_int
 from app.tools.registry import tool
 

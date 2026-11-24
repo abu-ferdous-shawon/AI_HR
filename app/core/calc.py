@@ -3,7 +3,7 @@ import math
 import operator
 
 from app.core.masking import BANGLA_DIGITS
-from app.core.security import ToolInputError
+from app.auth.security import ToolInputError
 
 MAX_LENGTH = 300
 HELP = "Use numbers with + - * / ( ) and round, min, max, abs, sum, without commas or % signs."

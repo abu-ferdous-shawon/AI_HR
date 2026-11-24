@@ -1,6 +1,6 @@
 import datetime
 
-from app.core.security import ToolInputError
+from app.auth.security import ToolInputError
 
 
 def to_int(value, label: str, low: int, high: int) -> int | None:

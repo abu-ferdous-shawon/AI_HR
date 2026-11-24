@@ -1,0 +1,36 @@
+# Copy this file to KNOWLEDGE_PACK_DIR and rename it for your application.
+# Replace the sample module, DocType and field names with names on your site.
+pack_name: custom_app_example
+version: "1.0"
+modules: [Service Operations]
+overview:
+  description: Tracks internal service requests from submission to resolution.
+  flows:
+    - A requester opens a Service Request and the assigned team resolves it.
+  supported_topics: [service requests, open work, response times]
+doctypes:
+  Service Request:
+    status_field: status
+    states: [Open, In Progress, Resolved]
+    date_fields: [requested_on, resolved_on]
+    owner_link: requester
+never_send:
+  doctype_fields:
+    Service Request: [internal_access_code]
+aliases:
+  service ticket: Service Request
+vocabulary:
+  open tickets: Service Request in Open or In Progress status
+kpis:
+  open ticket count:
+    target_doctype: Service Request
+recommended_reports:
+  - name: Open Service Requests
+    when_to_use: Review outstanding requests by team.
+master_hints:
+  - Group by assigned team when comparing backlogs.
+examples:
+  - question: How many tickets are still open?
+    intent: query_records
+    target_doctype: Service Request
+    notes: Count records in Open or In Progress status.

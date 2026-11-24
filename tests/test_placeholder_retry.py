@@ -1,5 +1,5 @@
-from app.core import agent
 from app.core.agent import run_agent
+from app.core.answer_language import fallback_answer
 from app.core.llm.base import LLMProvider, LLMResponse
 from app.core.masking import Vault
 from app.core.security import UserContext
@@ -43,6 +43,6 @@ def test_an_invented_placeholder_triggers_one_correction():
 
 def test_a_second_invented_placeholder_gives_the_fallback_not_garbage():
     result = run_agent("amar leave koto din baki?", CTX, llm=AlwaysInvents())
-    assert result.answer == agent.FALLBACK
+    assert result.answer == fallback_answer("banglish")
     assert "MASK" not in result.answer and "not available" not in result.answer
     assert [m.role for m in result.messages] == ["user", "assistant"]

@@ -16,7 +16,8 @@
   .root { --bg:#ffffff; --bot:#eef0f5; --text:#1d2330; --muted:#6b7385; --line:#e3e6ec;
           --accent:#2f5bea; --accent-text:#ffffff; --err-bg:#fdecec; --err:#a32020; }
   .root[data-theme="dark"] { --bg:#1a1d26; --bot:#252a38; --text:#e8eaf0; --muted:#98a0b3;
-          --line:#2a2f3c; --accent:#6c8cff; --accent-text:#0e1220; --err-bg:#3a1c1c; --err:#ff9a9a; }
+          --line:#2a2f3c; --accent:#6c8cff; --accent-text:#0e1220; --err-bg:#3a1c1c; --err:#ff9a9a;
+          --voice-bg:#38323e; --voice-hover:#493f50; --voice-color:#f4edf6; }
   .root { position:fixed; right:20px; bottom:20px; z-index:1040; color:var(--text);
           font:14px/1.5 system-ui,-apple-system,"Segoe UI","Noto Sans Bengali","Nirmala UI",sans-serif; }
   * { box-sizing:border-box; }
@@ -32,9 +33,10 @@
   header button { border:1px solid var(--line); background:var(--bg); border-radius:8px; padding:3px 9px; cursor:pointer; }
   .msgs { flex:1; overflow-y:auto; padding:12px; display:flex; flex-direction:column; gap:8px; }
   .hint { margin:auto; text-align:center; color:var(--muted); max-width:300px; }
-  .msg { max-width:86%; padding:8px 12px; border-radius:14px; white-space:pre-wrap; overflow-wrap:anywhere; }
+  .msg { flex-shrink:0; max-width:86%; padding:8px 12px; border-radius:14px; white-space:pre-wrap; overflow-wrap:anywhere; }
   .msg.user { align-self:flex-end; background:var(--accent); color:var(--accent-text); border-bottom-right-radius:4px; }
   .msg.bot { align-self:flex-start; background:var(--bot); border-bottom-left-radius:4px; }
+  .msg.bot:not(.typing) { max-width:100%; padding:11px 13px; border:1px solid var(--line); --reply-size:15px; }
   .msg.typing { color:var(--muted); font-style:italic; }
   .msg.error { align-self:center; background:var(--err-bg); color:var(--err); font-size:13px; max-width:94%; }
   .msg img { display:block; max-width:160px; max-height:120px; border-radius:8px; margin-bottom:6px; }
@@ -42,13 +44,21 @@
   .caption { font-size:12px; color:var(--muted); }
   .files { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
   .files button { border:1px solid var(--line); background:var(--bg); border-radius:8px; padding:4px 9px; cursor:pointer; }
+  .mutation-card { margin-top:10px; padding:10px; border:1px solid var(--line, #d5dae4); border-radius:8px; }
+  .mutation-field { margin-top:6px; font-size:.9em; }
+  .mutation-status { margin-top:6px; font-size:.9em; }
+  .debug-toggle, .chat-debug { color:var(--muted); font-size:.85em; }
+  .debug-toggle { display:flex; align-items:center; }
+  .chat-debug { margin-top:8px; }
+  .chat-debug summary { cursor:pointer; }
+  .chat-debug pre { max-height:16rem; overflow:auto; padding:8px; border:1px solid var(--line); border-radius:6px; }
   .thumbs { display:flex; gap:8px; padding:6px 12px 0; flex-wrap:wrap; }
   .thumb { position:relative; }
   .thumb img { height:48px; border-radius:6px; border:1px solid var(--line); display:block; }
   .thumb button { position:absolute; top:-7px; right:-7px; width:18px; height:18px; padding:0; border-radius:50%;
                   border:1px solid var(--line); background:var(--bg); font-size:11px; line-height:1; cursor:pointer; }
   .composer { display:flex; gap:6px; align-items:flex-end; padding:10px 12px; border-top:1px solid var(--line); }
-  .composer textarea { flex:1; resize:none; max-height:110px; padding:8px 10px; border:1px solid var(--line);
+  .composer textarea { flex:1; min-width:0; resize:none; max-height:110px; padding:8px 10px; border:1px solid var(--line);
                        border-radius:10px; background:var(--bg); }
   .composer button { border:1px solid var(--line); background:var(--bg); border-radius:10px; padding:8px 11px; cursor:pointer; }
   .composer button.send { background:var(--accent); color:var(--accent-text); border-color:var(--accent); }
@@ -83,6 +93,11 @@
   var host = el('div', { id: 'hr-ai-chat-host' });
   var shadow = host.attachShadow({ mode: 'open' });
   shadow.appendChild(el('style', { text: CSS }));
+  var chatUi = import(BASE + '/chat_message.js').then(function (format) {
+    format.installReplyStyles(shadow);
+    return format;
+  }).catch(function () { return null; });
+  var replyRenderer = chatUi.then(function (format) { return format?.renderReply; });
 
   var fab = el('button', { class: 'fab', type: 'button', 'aria-label': 'Open HR Assistant', title: 'HR Assistant', text: '💬' });
   var hint = el('div', { class: 'hint', text: HINT });
@@ -95,9 +110,12 @@
   var sendBtn = el('button', { class: 'send', type: 'button', text: 'Send' });
   var newBtn = el('button', { type: 'button', text: 'New chat' });
   var closeBtn = el('button', { type: 'button', 'aria-label': 'Close', text: '✕' });
+  var debugInput = el('input', { type: 'checkbox' });
+  var debugToggle = el('label', { class: 'debug-toggle' }, [debugInput, document.createTextNode('Debug')]);
+  debugToggle.hidden = !!DEV_EMPLOYEE;
 
   var panel = el('section', { class: 'panel', role: 'dialog', 'aria-label': 'HR Assistant', hidden: '' }, [
-    el('header', {}, [el('h2', { text: 'HR Assistant' }), newBtn, closeBtn]),
+    el('header', {}, [el('h2', { text: 'HR Assistant' }), debugToggle, newBtn, closeBtn]),
     msgs, thumbs,
     el('div', { class: 'composer' }, [attach, file, input, sendBtn]),
   ]);
@@ -121,17 +139,26 @@
   } catch (e) { /* theme stays as set */ }
 
   // ---- chat state ----
-  var convId = null, busy = false, pending = [];
+  var convId = null, busy = false, pending = [], voiceInput = null, chatVersion = 0;
+  var welcome = chatUi.then(function (format) {
+    return format?.createWelcome({
+      messages: msgs, hint: hint, endpoint: BASE + '/chat/welcome', headers: headers, onSessionEnd: sessionEnded,
+    });
+  });
 
   function scrollDown() { msgs.scrollTop = msgs.scrollHeight; }
 
-  function addMsg(kind, text, images) {
+  function showWelcome() {
+    welcome.then(function (greeting) { if (!panel.hidden) greeting?.show(); });
+  }
+
+  function addMsg(kind, content, images) {
     hint.hidden = true;
     var div = el('div', { class: 'msg ' + kind });
     (images || []).forEach(function (im) {
       div.appendChild(el('img', { src: im.preview, alt: 'attached image' }));
     });
-    div.appendChild(document.createTextNode(text));    // text only, never HTML
+    div.appendChild(typeof content === 'string' ? document.createTextNode(content) : content);
     msgs.appendChild(div);
     scrollDown();
     return div;
@@ -178,7 +205,8 @@
 
   function setBusy(on) {
     busy = on;
-    sendBtn.disabled = on; input.disabled = on; attach.disabled = on;
+    sendBtn.disabled = on || !!voiceInput?.active; input.disabled = on; attach.disabled = on;
+    voiceInput?.setChatBusy(on);
     if (!on) { input.focus(); }
   }
 
@@ -187,11 +215,20 @@
     input.style.height = Math.min(input.scrollHeight, 110) + 'px';
   }
 
-  function resetChat() {
+  function resetChat(greet = true) {
+    chatVersion++;
+    welcome.then(function (greeting) { greeting?.reset(); });
+    voiceInput?.cancel();
     convId = null; pending = []; renderThumbs();
     msgs.replaceChildren(hint);
     hint.hidden = false;
     input.focus();
+    if (greet) showWelcome();
+  }
+
+  function sessionEnded() {
+    resetChat(false);
+    addMsg('error', 'Your session has expired. Please refresh the page and sign in again.');
   }
 
   // ---- images: shrink in the browser, keep until sent ----
@@ -240,9 +277,11 @@
   async function send() {
     var text = input.value.trim();
     if (!text && pending.length) { text = 'Please look at the attached image.'; }
-    if (!text || busy) { return; }
+    if (!text || busy || voiceInput?.active) { return; }
 
     var sending = pending;
+    var debug = debugInput.checked && !debugToggle.hidden;
+    var version = chatVersion;
     pending = []; renderThumbs();
     setBusy(true);
     addMsg('user', text, sending);
@@ -255,21 +294,47 @@
         credentials: 'same-origin',
         headers: headers({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
-          message: text, conversation_id: convId,
+          message: text, conversation_id: convId, debug: debug,
           images: sending.map(function (i) { return { mime_type: i.mime_type, data: i.data }; }),
         }),
       });
       var data = {};
       try { data = await res.json(); } catch (e) { /* not JSON */ }
+      var render = res.ok ? await replyRenderer : null;
       typing.remove();
+      if (chatVersion !== version) {
+        setBusy(false);
+        return;
+      }
 
       if (res.ok) {
         convId = data.conversation_id;
-        var div = addMsg('bot', data.answer || '');
+        var answer = data.answer || '';
+        var div = addMsg('bot', render ? render(answer) : answer);
+        if (data.confirmation) {
+          try {
+            var confirmation = await import(BASE + '/mutation_confirmation.js');
+            confirmation.addConfirmation(div, data.confirmation, data.conversation_id, BASE + '/chat/confirm', function () {
+              var csrf = window.frappe && frappe.csrf_token;
+              return headers(typeof csrf === 'string' ? { 'X-Frappe-CSRF-Token': csrf } : {});
+            });
+            scrollDown();
+          } catch (error) {
+            addMsg('error', 'The confirmation card could not load. Start a new proposal.');
+          }
+        }
         if (data.files && data.files.length) { addFiles(div, data.files); }
         if (data.pictures && data.pictures.length) { showPictures(div, data.pictures); }
+        if (data.debug) {
+          div.appendChild(el('details', { class: 'chat-debug' }, [
+            el('summary', { text: 'Debug details' }), el('pre', { text: JSON.stringify(data.debug, null, 2) }),
+          ]));
+        } else if (debug) {
+          div.appendChild(el('div', { class: 'chat-debug', text: 'Debug details require the System Manager role.' }));
+        }
+        scrollDown();
       } else if (res.status === 401) {
-        addMsg('error', 'Your session has expired. Please refresh the page and sign in again.');
+        sessionEnded();
       } else if (res.status === 403) {
         addMsg('error', detail(data, 'Your account is not set up to use the assistant. Please contact HR.'));
       } else if (res.status === 413) {
@@ -285,7 +350,7 @@
       }
     } catch (e) {
       typing.remove();
-      addMsg('error', 'Cannot reach the assistant. Check your connection and try again.');
+      if (chatVersion === version) addMsg('error', 'Cannot reach the assistant. Check your connection and try again.');
     }
     setBusy(false);
   }
@@ -294,11 +359,12 @@
   function toggle(open) {
     panel.hidden = !open;
     fab.setAttribute('aria-label', open ? 'Close HR Assistant' : 'Open HR Assistant');
-    if (open) { input.focus(); }
+    if (open) { input.focus(); showWelcome(); }
+    else { voiceInput?.cancel(); }
   }
   fab.addEventListener('click', function () { toggle(panel.hidden); });
   closeBtn.addEventListener('click', function () { toggle(false); });
-  newBtn.addEventListener('click', resetChat);
+  newBtn.addEventListener('click', function () { resetChat(); });
   sendBtn.addEventListener('click', send);
   attach.addEventListener('click', function () { file.click(); });
   file.addEventListener('change', function (e) { addImages(Array.prototype.slice.call(e.target.files)); e.target.value = ''; });
@@ -314,4 +380,19 @@
   });
 
   document.body.appendChild(host);
+
+  async function initVoiceInput() {
+    try {
+      var response = await fetch(BASE + '/speech/config', { credentials: 'same-origin' });
+      if (!response.ok || !(await response.json()).enabled) return;
+      var speech = await import(BASE + '/voice_input.js');
+      voiceInput = speech.mountVoiceInput({
+        styleRoot: shadow, before: sendBtn, input: input, endpoint: BASE + '/stt', headers: headers,
+        onActiveChange: function (active) { sendBtn.disabled = busy || active; },
+        onError: function (message) { addMsg('error', message); },
+      });
+      voiceInput.setChatBusy(busy);
+    } catch (error) { /* Typing is available when speech setup fails. */ }
+  }
+  initVoiceInput();
 })();

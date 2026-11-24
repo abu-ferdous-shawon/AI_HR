@@ -1,5 +1,5 @@
 from app.core.masking import register_confidential
-from app.core.security import UserContext
+from app.auth.security import UserContext
 from app.records import fetch_records, summarize_records
 from app.registry import get_profile
 from app.tools.registry import tool

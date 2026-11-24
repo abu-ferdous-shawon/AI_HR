@@ -21,4 +21,8 @@ def test_declared_inputs_match_what_each_function_accepts():
     for t in registry._TOOLS.values():
         accepted = set(inspect.signature(t.func).parameters) - {"ctx"}
         declared = set(t.parameters.get("properties", {}))
+        if t.input_model is not None:
+            assert accepted == {"args"}
+            assert declared == set(t.input_model.model_fields)
+            continue
         assert accepted == declared, f"{t.name}: model sees {declared}, function takes {accepted}"

@@ -1,9 +1,9 @@
 import logging
 from dataclasses import dataclass
 
-from app.core.frappe_client import FrappeError, get_frappe_client
+from app.frappe_client.client import FrappeError, get_frappe_client
 from app.core.media import save_picture
-from app.core.security import ToolInputError, UserContext
+from app.auth.security import ToolInputError, UserContext
 from app.tools.registry import tool
 
 log = logging.getLogger("hr_ai.images")

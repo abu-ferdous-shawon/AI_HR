@@ -2,7 +2,7 @@ from pathlib import Path
 
 from app.config import settings
 from app.core.policy_index import PolicyIndex
-from app.core.security import ToolInputError, UserContext
+from app.auth.security import ToolInputError, UserContext
 from app.tools.registry import tool
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -20,8 +20,8 @@ def get_index() -> PolicyIndex:
     name="search_hr_policy",
     description=(
         "Search the company's HR policy documents (leave policy, handbook, "
-        "rules, procedures) and return the most relevant excerpts with the file "
-        f"each came from. The documents are written in {settings.policy_language}: "
+        "rules, procedures) and return the most relevant excerpts. "
+        f"The documents are written in {settings.policy_language}: "
         "write the search words in that language, even if the person asked in "
         "another language. If the excerpts do not answer the question, search "
         "again with different words or a synonym (for example annual, earned "
@@ -40,4 +40,4 @@ def search_hr_policy(ctx: UserContext, query: str | None = None) -> dict:
     if not excerpts:
         return {"excerpts": [],
                 "note": "No matching text was found in the policy documents."}
-    return {"excerpts": excerpts}
+    return {"excerpts": [{"text": excerpt["text"]} for excerpt in excerpts]}

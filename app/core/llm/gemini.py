@@ -28,7 +28,7 @@ def _retry_delay(exc: Exception) -> float | None:
 
 class GeminiProvider(LLMProvider):
     def __init__(self, api_key: str | None = None, model: str | None = None):
-        key = api_key or settings.gemini_api_key.get_secret_value()
+        key = settings.gemini_api_key.get_secret_value() if api_key is None else api_key
         if not key:
             raise LLMError("GEMINI_API_KEY is empty. Add it to your .env file.")
         self.model = model or settings.gemini_model
@@ -74,7 +74,8 @@ class GeminiProvider(LLMProvider):
             spec = {"name": t["name"], "description": t["description"]}
             # Gemini dislikes an empty parameter list, so leave it out then.
             if t["parameters"].get("properties"):
-                spec["parameters"] = t["parameters"]
+                key = "parameters_json_schema" if t.get("json_schema") else "parameters"
+                spec[key] = t["parameters"]
             declarations.append(types.FunctionDeclaration(**spec))
         return [types.Tool(function_declarations=declarations)]
 

@@ -67,9 +67,9 @@ def test_system_fields_are_hidden():
     assert not ({"owner", "creation", "docstatus", "_comments"} & set(result()["details"]))
 
 
-def test_confidential_values_reach_the_agent_which_masks_them():
+def test_confidential_values_are_distinct_from_never_send_fields():
     assert result()["details"]["cell_number"] == "01711000000"
-    assert result()["details"]["bank_ac_no"] == "123456"
+    assert "bank_ac_no" not in str(result())
 
 
 def test_only_the_callers_own_record_is_requested():
