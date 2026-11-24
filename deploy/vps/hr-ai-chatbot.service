@@ -1,0 +1,20 @@
+[Unit]
+Description=HR AI Chatbot
+Wants=network-online.target
+After=network-online.target frappe-v16.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=ecosystem
+WorkingDirectory=/home/ecosystem/projects/AI_HR
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/ecosystem/projects/AI_HR/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8101 --proxy-headers --forwarded-allow-ips=127.0.0.1
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
