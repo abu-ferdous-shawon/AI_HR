@@ -1,6 +1,7 @@
 import pytest
 
 from app.core import security
+from app.auth.credentials import Credentials
 from app.core.roles import RoleResult
 from app.core.security import AccessDenied, UserContext, has_role, require_role
 from app.records import scope
@@ -164,13 +165,17 @@ def test_resolve_context_finds_one_employee_and_their_roles(monkeypatch):
     assert directory.filters == {"user_id": "ann@x.com", "status": "Active"}
 
 
-@pytest.mark.parametrize("rows", [[], [{"name": "E5"}, {"name": "E6"}]])
-def test_no_employee_or_several_employees_for_a_login_is_refused(monkeypatch, rows):
+@pytest.mark.parametrize(("rows", "message"), [
+    ([], "No active employee"),
+    ([{"name": "E5"}, {"name": "E6"}], "Multiple active employee"),
+])
+def test_employee_lookup_requires_an_unambiguous_identity(monkeypatch, rows, message):
     directory = Directory()
     directory.rows = rows
     monkeypatch.setattr(security, "get_service_client", lambda: directory)
-    with pytest.raises(AccessDenied, match="No active employee"):
-        security.resolve_context("ann@x.com")
+    credentials = Credentials(authorization="token test:only") if rows else None
+    with pytest.raises(AccessDenied, match=message):
+        security.resolve_context("ann@x.com", credentials)
 
 def test_a_look_alike_name_is_not_treated_as_me(erp):
     erp.employees = [{"name": "E1", "employee_name": "Ali Khan"}]

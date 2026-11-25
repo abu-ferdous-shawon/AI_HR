@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     gemini_api_key: SecretStr = SecretStr("")
     llm_model: str = ""
     gemini_model: str = "gemini-2.5-flash"
+    groq_api_key: SecretStr = SecretStr("")
+    groq_fallback_model: str = ""
     # Testing shortcut: lets a browser on this machine chat as any employee.
     # Never turn this on for a server that other people can reach.
     dev_mode: bool = False
@@ -44,7 +46,7 @@ class Settings(BaseSettings):
     metadata_index_dir: str = "metadata_indexes"
     index_include_doctypes: str = ""
     index_exclude_doctypes: str = ""
-    write_doctypes: str = ""  # comma-separated targets for confirmed chat writes
+    write_doctypes: str = ""  # optional comma-separated restriction on confirmed chat writes
     # "manual" or "every:<hours>", for example every:24
     indexing_schedule: str = "manual"
 
@@ -88,7 +90,7 @@ class Settings(BaseSettings):
     require_encrypted_secrets: bool = False
     allowed_origins: str = ""          # extra exact browser origins, comma separated
     log_level: str = "INFO"
-    @field_validator("frappe_api_key", "frappe_api_secret", "gemini_api_key", mode="before")
+    @field_validator("frappe_api_key", "frappe_api_secret", "gemini_api_key", "groq_api_key", mode="before")
     @classmethod
     def _decrypt_secret(cls, value, info):
         """'enc:v1:...' values are decrypted here; plain values pass through."""

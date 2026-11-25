@@ -5,7 +5,7 @@ from app.config import settings
 from app.auth.credentials import Credentials
 from app.frappe_client.client import get_service_client
 from app.core.masking import is_confidential
-from app.auth.roles import resolve_roles
+from app.auth.roles import resolve_login_roles, resolve_roles
 from app.registry import Profile, get_profile
 from app.registry.models import norm
 from app.frappe_client.service_purpose import for_purpose
@@ -24,7 +24,7 @@ class ToolInputError(Exception):
 class UserContext:
     """Who is asking. Built by our code, never from the chat text."""
     user_id: str                       # the ERP login, e.g. an email
-    employee_id: str                   # the employee record linked to that login
+    employee_id: str | None            # an active Employee linked to the login, if any
     roles: tuple[str, ...] = ()        # the person's roles; empty = unknown, so no special access
     role_source: str = ""              # how the roles were found: session, key, mapping or none
     display_name: str = field(default="", compare=False, repr=False)
@@ -40,16 +40,19 @@ def build_context(user_id: str, employee_id: str,
 
 @for_purpose("identity")
 def resolve_context(user_id: str, credentials: Credentials | None = None) -> UserContext:
-    """Turn a logged-in user into their one employee record and roles, or refuse."""
+    """Bind a verified login to its Employee when present and resolve its roles."""
     cfg = get_profile().employee
     rows = get_service_client().get_list(
         cfg.doctype, ["name", cfg.name_field],
         filters={cfg.user_field: user_id, cfg.status_field: cfg.active_value},
         limit=2,
     )
-    # Exactly one match is required. Zero or several are both unsafe.
+    if not rows and credentials is not None:
+        found = resolve_login_roles(user_id, credentials)
+        return UserContext(user_id, None, found.roles, found.source)
     if len(rows) != 1:
-        raise AccessDenied("No active employee record is linked to this login.")
+        raise AccessDenied("No active employee record is linked to this login."
+                           if not rows else "Multiple active employee records are linked to this login.")
     return build_context(user_id, rows[0]["name"], credentials,
                          display_name=rows[0].get(cfg.name_field))
 
@@ -57,12 +60,19 @@ def resolve_context(user_id: str, credentials: Credentials | None = None) -> Use
 @for_purpose("team")
 def get_team(ctx: UserContext) -> list[dict]:
     """Active employees who report directly to this person."""
+    employee_id = require_employee(ctx)
     cfg = get_profile().employee
     return get_service_client().get_list(
         cfg.doctype, ["name", cfg.name_field],
-        filters={cfg.reports_to_field: ctx.employee_id, cfg.status_field: cfg.active_value},
+        filters={cfg.reports_to_field: employee_id, cfg.status_field: cfg.active_value},
         limit=200,
     )
+
+
+def require_employee(ctx: UserContext) -> str:
+    if ctx.employee_id is None:
+        raise AccessDenied("This request requires an active Employee record linked to your Frappe login.")
+    return ctx.employee_id
 
 
 def require_access(ctx: UserContext, employee_id: str | None) -> str:
@@ -70,8 +80,9 @@ def require_access(ctx: UserContext, employee_id: str | None) -> str:
 
     Every tool that accepts an employee_id MUST call this first.
     """
-    if not employee_id or employee_id == ctx.employee_id:
-        return ctx.employee_id
+    own_id = require_employee(ctx)
+    if not employee_id or employee_id == own_id:
+        return own_id
     if employee_id in {m["name"] for m in get_team(ctx)}:
         return employee_id
     raise AccessDenied(

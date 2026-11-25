@@ -77,6 +77,7 @@ def fetch_leave_history(ctx: UserContext, start: datetime.date, end: datetime.da
 
 @tool(
     name="get_my_leave_balance",
+    requires_employee=True,
     description=(
         "Get the logged-in employee's own leave balance as of today, for every "
         "leave type (for example Annual, Casual, Sick): total allowed, taken, "
@@ -89,6 +90,7 @@ def get_my_leave_balance(ctx: UserContext) -> dict:
 
 @tool(
     name="get_my_leave_history",
+    requires_employee=True,
     description=(
         "Get the logged-in person's own leave applications (what they applied "
         "for, dates, days, and whether each is Open, Approved or Rejected) for a "

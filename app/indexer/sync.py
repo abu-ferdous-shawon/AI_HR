@@ -65,9 +65,13 @@ def _report(path, manifest: dict, state: str) -> dict:
     }
 
 
-def _read_changes(versions: dict, previous: dict, kind: str, loader) -> tuple[dict, list[str]]:
+def _read_changes(versions: dict, previous: dict, kind: str, label: str, loader) -> tuple[dict, list[str]]:
     result, unavailable = {}, []
-    for name, revision in sorted(versions.items()):
+    total = len(versions)
+    log.info("Checking %d %s", total, label)
+    for position, (name, revision) in enumerate(sorted(versions.items()), start=1):
+        if position > 1 and (position - 1) % 25 == 0:
+            log.info("Checked %d of %d %s", position - 1, total, label)
         if previous.get("revisions", {}).get(kind, {}).get(name) == revision and name in previous[kind]:
             result[name] = previous[kind][name]
             continue
@@ -93,8 +97,10 @@ def sync_metadata(site: SiteConfig, *, force: bool = False, check: bool = False)
     store = _store(site)
     packs = load_packs(site.knowledge_packs, settings.knowledge_pack_dir)
     pack_hash = _pack_hash(packs)
+    log.info("Waiting for the metadata sync lock for site %s", site.name)
     with store.lock("sync"), use_site(site.name), service_purpose("indexing"):
         client = get_service_client()
+        log.info("Reading the Frappe metadata catalog for site %s", site.name)
         catalog, fingerprint = _scan(site, client, pack_hash)
         active = store.active()
         old = read_json(active / "snapshot.json") if active else {}
@@ -112,12 +118,13 @@ def sync_metadata(site: SiteConfig, *, force: bool = False, check: bool = False)
         previous = old if compatible and old.get("packs") == pack_hash and not force else {}
         policy = NeverSendPolicy(packs)
         schemas, denied_types = _read_changes(
-            catalog.doctypes, previous, "schemas",
+            catalog.doctypes, previous, "schemas", "DocTypes",
             lambda name: read_schema(client, name, catalog.workflows.get(name, []), policy.fields_for(name)),
         )
         reports, denied_reports = _read_changes(
-            catalog.reports, previous, "reports", lambda name: read_report(client, name, policy),
+            catalog.reports, previous, "reports", "reports", lambda name: read_report(client, name, policy),
         )
+        log.info("Preparing metadata index cards")
         aliases, keywords = build_maps(schemas, packs)
         tiers = build_cards(schemas, reports, aliases, keywords)
         workspace = store.workspace()
@@ -125,8 +132,12 @@ def sync_metadata(site: SiteConfig, *, force: bool = False, check: bool = False)
             with ExitStack() as stack:
                 embedder = _open_embedder(stack, site)
                 previous_vectors = active if compatible and old.get("embedding") == _embedding_key(site) else None
-                embedded = {tier: write_tier(workspace, tier, cards, embedder, previous_vectors)
-                            for tier, cards in tiers.items()}
+                embedded = {}
+                for tier, cards in tiers.items():
+                    log.info("Building %s with %d cards using %s embeddings",
+                             tier, len(cards), site.embedding_provider)
+                    embedded[tier] = write_tier(workspace, tier, cards, embedder, previous_vectors)
+            log.info("Rechecking the Frappe catalog before publishing the index")
             if _catalog(client, site) != catalog:
                 raise MetadataError("Frappe metadata changed during indexing. Retry the sync.")
             manifest = {

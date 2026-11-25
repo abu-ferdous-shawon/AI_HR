@@ -34,7 +34,8 @@ class GeminiEmbeddings:
     dimension = 768
 
     def __init__(self, api_key: str, model: str):
-        from google import genai, types
+        from google import genai
+        from google.genai import types
 
         if not api_key:
             raise EmbeddingError("Configure GEMINI_API_KEY or the site's gemini_api_key_env")

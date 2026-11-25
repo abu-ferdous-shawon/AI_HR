@@ -8,7 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from threading import Lock
 
+from app.auth.credentials import current_holder
+from app.auth.security import AccessDenied
 from app.core.sites import current_site
+from app.frappe_client.client import get_frappe_client
 from app.knowledge_packs.redactor import current_policy
 
 REPORT_DIR = Path(tempfile.gettempdir()) / "hr_ai_reports"
@@ -22,6 +25,7 @@ class StoredReport:
     path: Path
     name: str
     created: float
+    permission_doctype: str | None
 
 
 _reports: dict[str, StoredReport] = {}
@@ -42,9 +46,20 @@ def _cleanup() -> None:
             _reports.pop(key).path.unlink(missing_ok=True)
 
 
+def require_export_permission(doctype: str | None) -> None:
+    """Check the export's source using the caller's current Frappe credentials."""
+    if current_holder() is None or not doctype:
+        raise AccessDenied("A signed-in Frappe session and report source are required to export records.")
+    frappe = get_frappe_client()
+    if not (frappe.has_document_permission(doctype, "read")
+            and frappe.has_document_permission(doctype, "export")):
+        raise AccessDenied(f"Frappe requires Read and Export permission on {doctype} to download this report.")
+
+
 def save_report(owner: str, title: str, columns: list[str], rows: list[list],
                 file_format: str = "excel", *, source_doctype: str | None = None,
-                column_fields: tuple[str, ...] | None = None) -> dict:
+                column_fields: tuple[str, ...] | None = None,
+                permission_doctype: str | None = None) -> dict:
     if file_format not in ("excel", "csv"):
         raise ValueError("file_format must be 'excel' or 'csv'")
     if column_fields is not None and len(column_fields) != len(columns):
@@ -94,7 +109,9 @@ def save_report(owner: str, title: str, columns: list[str], rows: list[list],
         book.save(path)
 
     with _lock:
-        _reports[report_id] = StoredReport(owner, current_site().name, path, name, time.time())
+        _reports[report_id] = StoredReport(
+            owner, current_site().name, path, name, time.time(), permission_doctype or source_doctype,
+        )
     return {"id": report_id, "name": name, "rows": len(body), "format": file_format}
 
 

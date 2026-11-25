@@ -26,6 +26,7 @@ _BLOCKED_TYPES = INTERNAL | {
     "User", "Role", "Has Role", "Custom Role", "User Type", "Webhook",
     "OAuth Client", "OAuth Bearer Token", "Role Profile", "Client Script", "Server Script",
 }
+_BLOCKED_TYPE_NAMES = frozenset(name.casefold() for name in _BLOCKED_TYPES)
 _TEXT = {"Data", "Small Text", "Text", "Long Text", "Text Editor", "Markdown Editor",
          "Phone", "Autocomplete", "Link", "Select"}
 _NUMBER = {"Int", "Long Int", "Float", "Currency", "Percent", "Check", "Rating", "Duration"}
@@ -66,7 +67,8 @@ def _empty(value) -> bool:
 
 
 def writable_doctype(doctype: str) -> bool:
-    return doctype in current_site().write_doctypes and doctype not in _BLOCKED_TYPES
+    allowed = current_site().write_doctypes
+    return doctype.casefold() not in _BLOCKED_TYPE_NAMES and (not allowed or doctype in allowed)
 
 
 def _permission(client: FrappeClient, dtype: str, ptype: str, name: str | None = None) -> None:
@@ -212,6 +214,9 @@ def _existing(client: FrappeClient, user: UserContext, request: MutationRequest)
 
 def prepare_mutation(client: FrappeClient, user: UserContext, request: MutationRequest,
                      types: dict[str, dict] | None = None) -> PreparedMutation:
+    ownership = self_filters(request.doctype, user)
+    if ownership and user.employee_id is None:
+        raise MutationFailure(403, "This change requires an active Employee record linked to your Frappe login.")
     if types is None:
         types = load_mutation_schema(client, request.doctype, request.operation)
     if request.operation == "create":
@@ -224,7 +229,7 @@ def prepare_mutation(client: FrappeClient, user: UserContext, request: MutationR
         raise MutationFailure(422, "This operation only needs a record ID.")
     raw = dict(request.payload)
     if request.operation in ("create", "update"):
-        for field, _, owner in self_filters(request.doctype, user):
+        for field, _, owner in ownership:
             if field in raw and raw[field] != owner:
                 raise MutationFailure(403, "This chat tool is limited to your own record.")
             if request.operation == "create" and field != "name":

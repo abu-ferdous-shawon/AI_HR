@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 from app.frappe_client.client import get_service_client
 from app.auth.security import (
-    AccessDenied, ToolInputError, UserContext, get_team, has_role, is_hr_admin,
+    AccessDenied, ToolInputError, UserContext, get_team, has_role, is_hr_admin, require_employee,
 )
 from app.frappe_client.service_purpose import for_purpose, service_purpose
 from app.registry.models import Profile, RecordType, norm
@@ -82,21 +82,18 @@ def resolve_access(ctx: UserContext, profile: Profile, rt: RecordType,
         raise AccessDenied(f"{rt.label} are not available at the '{level}' level. "
                            f"Available: {', '.join(rt.scopes)}.")
     text = _clean_name(employee) if employee and str(employee).strip() else None
-    if text:
-        cfg = profile.employee
-        with service_purpose("identity"):
-            own = get_service_client().get_list(
-                cfg.doctype, [cfg.name_field], filters={"name": ctx.employee_id}, limit=1)
     if level == "self":
+        own_id = require_employee(ctx)
         if text:
             cfg = profile.employee
-            own = get_service_client().get_list(
-                cfg.doctype, [cfg.name_field], filters={"name": ctx.employee_id}, limit=1)
+            with service_purpose("identity"):
+                own = get_service_client().get_list(
+                    cfg.doctype, [cfg.name_field], filters={"name": own_id}, limit=1)
             own_name = (own[0].get(cfg.name_field) or "").strip() if own else ""
-            if not _is_me(text, ctx.employee_id, own_name):
+            if not _is_me(text, own_id, own_name):
                 raise AccessDenied("You can only view your own records here. For other people "
                                    "use scope 'team' (your direct reports) or 'company' (HR only).")
-        return Access("self", (ctx.employee_id,), None)
+        return Access("self", (own_id,), None)
 
     if level == "team":
         needed = profile.access.manager_roles

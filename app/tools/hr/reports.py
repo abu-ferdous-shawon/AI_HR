@@ -1,5 +1,5 @@
 from app.frappe_client.client import get_frappe_client
-from app.core.reports import save_report
+from app.core.reports import require_export_permission, save_report
 from app.auth.security import (
     AccessDenied, ToolInputError, UserContext, get_team, require_access,
 )
@@ -100,6 +100,7 @@ REPORT_FIELDS = {
 
 @tool(
     name="create_report",
+    requires_employee=True,
     description=(
         "Create a downloadable Excel or CSV report file. report_type is one of: "
         "attendance (yours, or scope=team for all your direct reports), "
@@ -136,12 +137,15 @@ def create_report(ctx: UserContext, report_type=None, file_format=None, scope=No
     if (scope == "team" or target != ctx.employee_id) and report_type != "attendance":
         raise AccessDenied("Only attendance reports can cover other people.")
 
+    doctype, fields = REPORT_FIELDS[report_type]
+    permission_doctype = "Holiday List" if report_type == "holidays" else doctype
+    require_export_permission(permission_doctype)
     title, columns, rows = REPORTS[report_type](ctx, {
         "target": target, "scope": scope, "year": year,
         "from_date": from_date, "to_date": to_date})
     if not rows:
         return {"message": "There are no records for that period, so no report was created."}
-    doctype, fields = REPORT_FIELDS[report_type]
     return {"file": save_report(ctx.user_id, title, columns, rows, fmt,
-                                source_doctype=doctype, column_fields=fields),
+                                source_doctype=doctype, column_fields=fields,
+                                permission_doctype=permission_doctype),
             "message": f"Report '{title}' created with {len(rows)} rows."}

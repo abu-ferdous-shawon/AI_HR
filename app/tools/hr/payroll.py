@@ -45,6 +45,7 @@ def fetch_payslips(ctx: UserContext, start: datetime.date, end: datetime.date,
 
 @tool(
     name="get_my_payslips",
+    requires_employee=True,
     description=(
         "Get the logged-in person's own salary slips for a year (default: this "
         "year) or one month of a year. With a month, each slip also includes its "

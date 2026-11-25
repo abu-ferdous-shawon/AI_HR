@@ -1,5 +1,6 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
@@ -45,6 +46,7 @@ class FakeFrappe:
             {"fieldname": "posting_date", "fieldtype": "Date"},
             {"fieldname": "api_secret", "fieldtype": "Data"},
             {"fieldname": "docstatus", "fieldtype": "Int"},
+            *([{"fieldname": "cell_number", "fieldtype": "Data"}] if doctype == "Employee" else []),
         ]}]
 
     def get_doc(self, doctype, name):
@@ -71,8 +73,9 @@ class FakeFrappe:
 
 
 @pytest.fixture
-def site(monkeypatch):
-    site = sites.get_default_site().model_copy(update={"write_doctypes": ["ToDo", "Test Transaction"]})
+def site(monkeypatch, request):
+    write_doctypes = getattr(request, "param", ["ToDo", "Test Transaction"])
+    site = sites.get_default_site().model_copy(update={"write_doctypes": write_doctypes})
     monkeypatch.setattr(sites, "_loaded", lambda: ({site.name: site}, site.name))
     monkeypatch.setattr(main.settings, "frappe_auth_mode", "user_session")
     store = ConfirmationStore()
@@ -95,7 +98,7 @@ def _request():
     return Request({"type": "http", "headers": [], "client": ("127.0.0.1", 12345)})
 
 
-def _propose(monkeypatch, operation, doctype, name=None, **payload):
+def _propose(monkeypatch, operation, doctype, name=None, *, target=None, **payload):
     arguments = {"operation": operation, "doctype": doctype, "name": name, "payload": payload}
 
     class Model:
@@ -106,7 +109,7 @@ def _propose(monkeypatch, operation, doctype, name=None, **payload):
             return LLMResponse(tool_calls=[ToolCall("propose_mutation", arguments)])
 
     monkeypatch.setattr(mutation_planner, "get_llm", lambda: Model())
-    text = f"{operation} {doctype}" + (f" {name}" if name else "")
+    text = f"{operation} {target or doctype}" + (f" {name}" if name else "")
     response = main.chat(_request(), main.ChatRequest(message=text, conversation_id="mutation_1"), USER, CREDS)
     assert response.confirmation is not None
     assert response.confirmation.token not in response.answer
@@ -144,6 +147,125 @@ def test_chat_proposes_and_the_confirmation_endpoint_writes_once(
         main.confirm_change(_decision(card), USER, CREDS)
     assert repeated.value.status_code == 409
     assert len(site.writes) == 1
+
+
+@pytest.mark.parametrize("site", [[]], indirect=True)
+def test_create_uses_live_frappe_permissions_without_a_doctype_list(site, monkeypatch):
+    card = _propose(monkeypatch, "create", "Custom Employee Request",
+                    target='DocType "Custom Employee Request"', description="New")
+    assert site.writes == []
+    response = main.confirm_change(_decision(card), USER, CREDS)
+    assert response.state == "executed"
+    assert site.writes == [("POST", "Custom Employee Request", None, {"description": "New"}, None)]
+
+
+@pytest.mark.parametrize("site", [[]], indirect=True)
+@pytest.mark.parametrize("allowed", [True, False])
+def test_update_my_phone_uses_the_linked_employee_and_frappe_permission(site, monkeypatch, allowed):
+    def has_permission(doctype, permission, name=None):
+        assert doctype == "Employee"
+        if permission == "write":
+            assert name == USER.employee_id
+            return allowed
+        assert permission == "read"
+        return True
+
+    def unexpected_model():
+        pytest.fail("A self-service phone update does not need the model")
+
+    monkeypatch.setattr(site, "has_document_permission", has_permission)
+    monkeypatch.setattr(mutation_planner, "get_llm", unexpected_model)
+    site.doc.update(name=USER.employee_id, cell_number="01700000000")
+    number = "01800000001"
+    request = main.ChatRequest(message=f"update my phone number to {number}\\",
+                               conversation_id="mutation_1")
+    response = main.chat(_request(), request, USER, CREDS)
+    assert site.writes == []
+    if allowed:
+        card = response.confirmation
+        assert card.doctype == "Employee" and card.document_name == USER.employee_id
+        assert [(change.field, change.after) for change in card.changes] == [("cell_number", number)]
+        assert main.confirm_change(_decision(card), USER, CREDS).state == "executed"
+        assert site.writes == [("PUT", "Employee", USER.employee_id, {"cell_number": number}, STAMP)]
+    else:
+        assert response.confirmation is None
+        assert "Frappe denied permission" in response.answer
+
+
+@pytest.mark.parametrize("site", [[]], indirect=True)
+def test_indexed_update_checks_the_signed_in_users_record_permission(site, monkeypatch, tmp_path):
+    (tmp_path / "alias_map.json").write_text("{}", encoding="utf-8")
+
+    @contextmanager
+    def snapshot(_site, _packs):
+        yield tmp_path, {"schemas": {"Custom Request": {}}}
+
+    monkeypatch.setattr(mutation_planner, "open_snapshot", snapshot)
+    checks = []
+
+    def has_permission(doctype, permission, name=None):
+        checks.append((doctype, permission, name))
+        return permission == "read"
+
+    monkeypatch.setattr(site, "has_document_permission", has_permission)
+    reply = LLMResponse(tool_calls=[ToolCall("propose_mutation", {
+        "operation": "update", "doctype": "Custom Request", "name": "TASK-1",
+        "payload": {"description": "Changed"},
+    })])
+    monkeypatch.setattr(mutation_planner, "get_llm", lambda: SimpleNamespace(generate=lambda *args: reply))
+    response = main.chat(_request(), main.ChatRequest(message="Update Custom Request TASK-1"), USER, CREDS)
+    assert response.confirmation is None
+    assert "Frappe denied permission" in response.answer
+    assert checks == [("Custom Request", "read", None), ("Custom Request", "write", "TASK-1")]
+    assert site.writes == []
+
+
+@pytest.mark.parametrize("site", [[]], indirect=True)
+def test_unclear_write_suggests_similar_doctypes_and_relevant_fields(site, monkeypatch, tmp_path):
+    monkeypatch.setattr(mutation_planner, "open_snapshot",
+                        lambda *args: nullcontext((tmp_path, {"schemas": {}})))
+    (tmp_path / "alias_map.json").write_text("{}", encoding="utf-8")
+
+    def search(config, tier, query, limit):
+        assert tier == "schema_index"
+        assert "priority" in query and "01800000001" not in query
+        return [
+            {"key": "ToDo", "score": 0.8},
+            {"key": "Private Record", "score": 0.7},
+            {"key": "User", "score": 0.6},
+            {"key": "Task", "score": 0.5},
+            {"key": "Unrelated Record", "score": 0.1},
+        ]
+
+    def has_permission(doctype, permission, name=None):
+        assert permission == "read" and name is None
+        return doctype != "Private Record"
+
+    monkeypatch.setattr(mutation_planner, "search_metadata", search)
+    monkeypatch.setattr(site, "has_document_permission", has_permission)
+    body = main.ChatRequest(message="Update the priority of my work item for 01800000001")
+    response = main.chat(_request(), body, USER, CREDS)
+    assert response.confirmation is None
+    assert "Which DocType did you mean?" in response.answer
+    assert "**ToDo** (priority," in response.answer and "**Task** (priority," in response.answer
+    assert all(name not in response.answer for name in ("Private Record", "User", "Unrelated Record", "api_secret"))
+    assert site.writes == []
+
+
+@pytest.mark.parametrize(("site", "doctype"), [
+    ([], "user"),
+    (["ToDo"], "Custom Employee Request"),
+], indirect=["site"])
+def test_write_restrictions_are_enforced_before_loading_schema(site, monkeypatch, doctype):
+    def unexpected(*args):
+        pytest.fail("A blocked DocType must not reach Frappe")
+
+    monkeypatch.setattr(site, "has_document_permission", unexpected)
+    request = main.ChatRequest(message=f'Create a record in DocType "{doctype}"')
+    response = main.chat(_request(), request, USER, CREDS)
+    assert response.confirmation is None
+    assert "Chat writes are unavailable for this DocType" in response.answer
+    assert site.writes == []
 
 
 def test_wrong_conversation_cannot_consume_proposal_and_discard_has_no_write(site, monkeypatch):

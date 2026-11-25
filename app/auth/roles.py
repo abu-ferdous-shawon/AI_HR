@@ -81,6 +81,21 @@ def _session_client(credentials: Credentials) -> FrappeClient:
     return FrappeClient(credentials=credentials)      # replaced by a fake in tests
 
 
+@for_purpose("roles")
+def resolve_login_roles(user_id: str, credentials: Credentials) -> RoleResult:
+    """Read the verified Frappe login's roles without using Employee-based mappings."""
+    access = get_profile().access
+    client = _session_client(credentials)
+    try:
+        roles, notes = _read_roles(client, user_id, access)
+    finally:
+        client.session.close()
+    if roles:
+        return RoleResult(tuple(roles), "session", tuple(notes))
+    roles, key_notes = _read_roles(get_service_client(), user_id, access)
+    return RoleResult(tuple(roles), "key" if roles else "none", tuple(notes + key_notes))
+
+
 def _employee_facts(employee_id: str, cfg: EmployeeConfig) -> dict:
     rows = get_service_client().get_list(cfg.doctype, ["*"],
                                          filters={"name": employee_id}, limit=1)

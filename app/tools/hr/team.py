@@ -4,6 +4,7 @@ from app.tools.registry import tool
 
 @tool(
     name="list_my_team",
+    requires_employee=True,
     description=(
         "List the employees who report directly to the logged-in person "
         "(ID and name). Use this to find a team member's ID before asking about "

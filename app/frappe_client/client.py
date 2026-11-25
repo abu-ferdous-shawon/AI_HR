@@ -1,5 +1,6 @@
 import json
 import re
+import time
 from functools import lru_cache
 from typing import Any
 from urllib.parse import quote, unquote, urlparse
@@ -126,11 +127,23 @@ class FrappeClient:
 
     def _get(self, path: str, params: dict | None = None) -> dict:
         url = self.base_url + path
-        try:
-            response = self.session.get(url, params=params, timeout=self.timeout,
-                                        allow_redirects=False)
-        except requests.RequestException:
-            raise FrappeError(0, "could not reach Frappe") from None
+        indexing = active_purpose() == "indexing" and not self.acts_as_user
+        attempts = 3 if indexing else 1
+        for attempt in range(1, attempts + 1):
+            try:
+                response = self.session.get(url, params=params, timeout=self.timeout,
+                                            allow_redirects=False)
+            except requests.RequestException as exc:
+                retryable = isinstance(exc, (
+                    requests.ConnectionError, requests.Timeout, requests.exceptions.ChunkedEncodingError,
+                )) and not isinstance(exc, requests.exceptions.SSLError)
+                if attempt == attempts or not retryable:
+                    raise FrappeError(0, "could not reach Frappe") from None
+                log.warning("Frappe metadata read hit a connection error. Retrying (%d/%d).",
+                            attempt + 1, attempts)
+                time.sleep(attempt)
+            else:
+                break
 
         if 300 <= response.status_code < 400:   # usually the login page: the session ended
             raise FrappeError(401, "the HR system redirected the request "

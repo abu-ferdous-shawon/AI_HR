@@ -95,7 +95,7 @@ def run_agent(question: str, ctx: UserContext,
 
     language = detect_language(question)
     hint, fallback = HINTS.get(language, ""), fallback_answer(language)
-    tools = get_tool_specs(include_contextual=True) if contextual_tools else get_tool_specs()
+    tools = get_tool_specs(include_contextual=bool(contextual_tools), has_employee=ctx.employee_id is not None)
     if allowed_tools is not None:
         tools = [spec for spec in tools if spec["name"] in allowed_tools]
     exposed = {spec["name"]: spec["parameters"].get("properties", {}) for spec in tools}
@@ -114,6 +114,11 @@ def run_agent(question: str, ctx: UserContext,
         if correction and trace:
             trace.retry_count = read_retry.count
         system = build_system_prompt(vault, hint)   # rebuilt each round: placeholders may exist now
+        if ctx.employee_id is None:
+            system += ("\n\nThe Frappe login has no linked active Employee record. "
+                       "Use the available Frappe tools for records and reports this account can read. "
+                       "Personal employee records and direct-report lookups require an Employee link. "
+                       "Explain that if requested, and never guess an employee ID for this login.")
         if guidance:
             system += "\n\n" + guidance
         reply = llm.generate(system, messages, tools)
