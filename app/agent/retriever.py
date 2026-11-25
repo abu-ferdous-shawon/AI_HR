@@ -19,9 +19,9 @@ from app.knowledge_packs.redactor import current_policy
 
 _CANDIDATES = 4
 _MAX_FIELDS = 18
-_COMMON = ("status", "docstatus", "posting_date", "transaction_date", "attendance_date", "date", "company", "employee")
+_COMMON = ("status", "docstatus", "posting_date", "transaction_date", "attendance_date", "date", "company", "employee", "reports_to", "employee_name")
 _REPORT_WORDS = re.compile(r"\b(report|register|sheet|analysis|summary|aging|ledger)\b", re.I)
-# Preserve the existing self-only boundary even if the site grants broader read access.
+# Ownership restrictions for the mutation path.
 _SELF_ONLY = {"Employee": "name", "Salary Slip": "employee", "Leave Application": "employee"}
 _NON_QUERYABLE = INTERNAL | {"User", "Role", "Has Role", "Employee Education", "Salary Detail"}
 
@@ -98,7 +98,7 @@ def _verify_schema(context: ReadContext, schema: dict, requested: list[dict]) ->
     if schema.get("issingle"):
         allowed = set(client.get_doc(name, name, fields=["name", *fields]))
     else:
-        rows = client.get_list(name, ["name", *fields], filters=self_filters(name, context.user), limit=1)
+        rows = client.get_list(name, ["name", *fields], filters={}, limit=1)
         # An empty query proves access to the list, but supplies no evidence for individual fields.
         allowed = set(rows[0]) if rows else {"name"}
     policy = current_policy()
@@ -109,6 +109,10 @@ def _verify_schema(context: ReadContext, schema: dict, requested: list[dict]) ->
     return {
         "name": name, "module": schema["module"], "issingle": bool(schema.get("issingle")),
         "fields": visible,
+        "detail_fields": policy.project(
+            ["name", *(item["fieldname"] for item in schema["fields"]
+                       if item["fieldtype"] not in NON_COLUMN_TYPES), *fields], name,
+        ),
         "status_options": schema["status_options"] if "status" in allowed else [],
         "workflow_states": [workflow for workflow in schema["workflow_states"]
                             if workflow["fieldname"] in allowed],
@@ -160,7 +164,7 @@ def _guidance(context: ReadContext, packs: tuple[KnowledgePack, ...]) -> list[di
 
 
 def schema_view(schema: dict) -> dict:
-    return {name: value for name, value in schema.items() if name != "child_tables"}
+    return {name: value for name, value in schema.items() if name not in {"child_tables", "detail_fields"}}
 
 
 def retrieve(site: SiteConfig, client: FrappeClient, user: UserContext, query: str) -> ReadContext:
@@ -220,6 +224,9 @@ def retrieve(site: SiteConfig, client: FrappeClient, user: UserContext, query: s
         if embedding is not None and hasattr(embedding, "close"):
             embedding.close()
 
+    if (candidates and "Employee" in manifest["schemas"] and "Employee" not in candidates
+            and any(_matches(terms, word) for word in ("my employees", "my team", "direct reports", "for employee"))):
+        candidates.append("Employee")
     context.matched_doctypes = candidates
     context.matched_reports = report_names
     for name in candidates:
@@ -250,12 +257,13 @@ def retrieve(site: SiteConfig, client: FrappeClient, user: UserContext, query: s
             context.reports[name] = report
 
     if context.schemas or context.reports:
-        try:
-            rows = client.get_list("Employee", ["company"], filters={"name": user.employee_id}, limit=1)
-            if rows and isinstance(rows[0].get("company"), str):
-                context.company = rows[0]["company"]
-        except FrappeError:
-            pass
+        if user.employee_id is not None:
+            try:
+                rows = client.get_list("Employee", ["company"], filters={"name": user.employee_id}, limit=1)
+                if rows and isinstance(rows[0].get("company"), str):
+                    context.company = rows[0]["company"]
+            except FrappeError:
+                pass
         context.guidance = _guidance(context, packs)
     return context
 

@@ -7,7 +7,7 @@ from typing import Any, Callable
 from pydantic import BaseModel, ValidationError
 
 from app.frappe_client.client import FrappeError
-from app.auth.security import AccessDenied, ToolInputError, UserContext, is_hr_admin, scrub
+from app.auth.security import AccessDenied, ToolInputError, UserContext, is_hr_admin, require_employee, scrub
 from app.knowledge_packs.redactor import current_policy
 
 log = logging.getLogger("hr_ai.tools")
@@ -24,6 +24,7 @@ class Tool:
     allow: frozenset = frozenset()   # confidential fields it may return ("*" = all; the agent masks them)
     hr_only: bool = False            # only HR may use it; enforced in run_tool
     input_model: type[BaseModel] | None = None
+    requires_employee: bool = False
 
 
 _TOOLS: dict[str, Tool] = {}
@@ -55,7 +56,7 @@ def _finish(kind: str, payload: dict, failure: FrappeError | None = None) -> dic
 
 def tool(name: str, description: str, parameters: dict | None = None,
          allow: tuple[str, ...] = (), hr_only: bool = False, *,
-         input_model: type[BaseModel] | None = None):
+         input_model: type[BaseModel] | None = None, requires_employee: bool = False):
     """Decorator that adds a function to the list of approved tools."""
     def decorator(func):
         if name in _TOOLS:
@@ -64,7 +65,7 @@ def tool(name: str, description: str, parameters: dict | None = None,
             name, description,
             input_model.model_json_schema() if input_model else
             (parameters or {"type": "object", "properties": {}}), func,
-            frozenset(allow), hr_only, input_model,
+            frozenset(allow), hr_only, input_model, requires_employee,
         )
         return func
     return decorator
@@ -83,12 +84,13 @@ def load_all_tools() -> None:
         )
 
 
-def get_tool_specs(*, include_contextual: bool = False) -> list[dict]:
+def get_tool_specs(*, include_contextual: bool = False, has_employee: bool = True) -> list[dict]:
     """What we show the model: names, descriptions and inputs only."""
     return [
         {"name": t.name, "description": t.description, "parameters": t.parameters,
          **({"json_schema": True} if t.input_model else {})}
-        for t in _TOOLS.values() if include_contextual or t.input_model is None
+        for t in _TOOLS.values()
+        if (include_contextual or t.input_model is None) and (has_employee or not t.requires_employee)
     ]
 
 
@@ -103,6 +105,8 @@ def run_tool(name: str, args: dict | None, ctx: UserContext) -> dict:
     clean = {k: v for k, v in (args or {}).items() if k in allowed}
 
     try:
+        if selected.requires_employee:
+            require_employee(ctx)
         if selected.hr_only and not is_hr_admin(ctx):
             return _finish("denied", {"error": HR_ONLY_MESSAGE})
         if selected.input_model is not None:

@@ -18,6 +18,7 @@ def get_index() -> PolicyIndex:
 
 @tool(
     name="search_hr_policy",
+    requires_employee=True,
     description=(
         "Search the company's HR policy documents (leave policy, handbook, "
         "rules, procedures) and return the most relevant excerpts. "

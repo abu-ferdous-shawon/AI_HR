@@ -32,7 +32,10 @@ _TYPE = {"type": "string", "enum": _TYPES, "description": "Which kind of record.
     description=(
         "List HR records of one type: the logged-in person's own by default, their direct "
         "reports with scope 'team', or everyone with scope 'company' (HR only). Name one "
-        "employee in 'employee' when asked about a specific person. Dates are YYYY-MM-DD; "
+        "employee in 'employee' when asked about a specific person. To look up another "
+        "employee's salary slip, use record_type 'salary_slip', scope 'company', and "
+        "their name or ID in 'employee'. This requires HR access even for a direct report. "
+        "Dates are YYYY-MM-DD; "
         "for records that span a period (leave, shifts) any overlap counts. The outcome is "
         "'records' or 'no_records' and filters_used always says what was applied. If "
         "truncated is true there are more records: narrow the dates or status. Never guess "

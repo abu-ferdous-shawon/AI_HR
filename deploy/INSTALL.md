@@ -355,29 +355,32 @@ the schema. Use a populated DocType for field and aggregation checks.
 
 ## Phase 5 confirmed writes
 
-Chat writes are available for explicitly enabled DocTypes. Set
-`WRITE_DOCTYPES=ToDo` for a single-site local test. A multi-site setup uses
-`write_doctypes: [ToDo]` under the site's entry. Add only the DocTypes you
-intend to test. The chat user supplies their own Frappe credentials and
-Frappe still checks native permissions. In Desk, the widget forwards the
-current session's CSRF token with the confirmation request.
+Chat uses the signed-in user's Frappe credentials to check write permissions
+for each request and checks them again at confirmation. Leave
+`WRITE_DOCTYPES` empty to use Frappe permissions for supported DocTypes. To
+restrict chat writes to specific DocTypes, set `WRITE_DOCTYPES=ToDo` for a
+single site or `write_doctypes: [ToDo]` under the site's entry for a multi-site
+setup. In Desk, the widget forwards the current session's CSRF token with
+the confirmation request.
 
 ### Start the local backend
 
-Use your usual chat configuration and a regular user token. Phase 5 proposals
-use live Frappe metadata, so you can test `ToDo` independently of the Phase 4
-invoice and report fixtures.
+Use your usual chat configuration and a regular user token. Chat recognizes
+names and aliases from the metadata index. When it cannot identify one target
+from your wording, it looks for similar DocTypes and asks which one you meant.
+The suggestions can include relevant fields. You can also specify the exact
+name as `DocType "ToDo"` to use live Frappe metadata without the index.
 
 ```bash
 cd ~/ai_backend
-WRITE_DOCTYPES=ToDo DEV_MODE=false FRAPPE_AUTH_MODE=user_session \
+DEV_MODE=false FRAPPE_AUTH_MODE=user_session \
   .venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 8100
 ```
 
 ### Test in chat and Frappe Desk
 
 1. Sign into the local chat as a user who can create and edit their own ToDos.
-   Ask **Create a ToDo with description "Phase 5 confirmation check".**
+   Ask **Create a record in DocType "ToDo" with description "Phase 5 confirmation check".**
    Chat should display a **Create ToDo** card showing the exact field. Search
    for the description in Desk before confirming and verify it is absent.
    You can type **reviewed** in the same chat to show the card again. The
@@ -385,18 +388,18 @@ WRITE_DOCTYPES=ToDo DEV_MODE=false FRAPPE_AUTH_MODE=user_session \
 2. Click **Discard**. Refresh the Desk list and verify the test ToDo is still
    absent. Ask for it again and click **Confirm create**. Copy the returned
    record ID and open that record in Desk.
-3. Ask **Update ToDo <record ID> and change description to "Phase 5 updated".**
+3. Ask **Update DocType "ToDo" <record ID> and change description to "Phase 5 updated".**
    Verify the card shows the original and new descriptions. Click
    **Confirm update** and compare the saved field in Desk.
 4. Ask for a second update, then edit the same ToDo directly in Desk before
    clicking **Confirm update**. The backend should reject the older proposal.
    Refresh Desk and verify the newer change is present.
-5. Ask **Delete ToDo <record ID>** for the test record. Confirm the deletion
+5. Ask **Delete DocType "ToDo" <record ID>** for the test record. Confirm the deletion
    only once you have checked the exact ID on the card. Refresh Desk and
    verify the test record is gone.
 
 ToDo supports create, update, and delete. To test submission and cancellation,
-enable a submittable test DocType as well. Use a draft for **Submit** and a
+use a submittable test DocType. Use a draft for **Submit** and a
 submitted record for **Cancel**. The same user needs the corresponding Frappe
 permissions and Write access. Verify each proposed state in Desk before and
 after confirmation. Chat updates apply to draft records and support scalar
@@ -443,3 +446,17 @@ can verify recovery, attempt limits, and redaction without changing live data.
 ```bash
 .venv/bin/python -m pytest -q tests/test_tools_and_retry.py tests/test_phase4_reads.py tests/test_audit.py
 ```
+
+### Optional GroqCloud chat fallback
+
+For GroqCloud, set `GROQ_API_KEY` and `GROQ_FALLBACK_MODEL` in the local
+`.env` or in `/etc/hr-ai/hr-ai.env` on the VM. Use a model available to
+your GroqCloud account that supports function calling and image input.
+If `REQUIRE_ENCRYPTED_SECRETS=true`, encrypt the Groq key with the existing
+master key.
+
+For a single site in `SITES_FILE`, leave the global Groq model blank and
+set `groq_fallback_model` and `groq_api_key_env` on the chosen site.
+Restart the backend to apply changes. During Gemini failover, look for
+`Routing chat to GroqCloud after Gemini became unavailable` in the backend log.
+Clear the Groq fallback model and restart to disable it.

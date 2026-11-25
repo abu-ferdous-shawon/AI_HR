@@ -91,6 +91,7 @@ def fetch_holidays(ctx: UserContext, start: datetime.date, end: datetime.date,
 
 @tool(
     name="get_holidays",
+    requires_employee=True,
     description=(
         "Get the days off that apply to the logged-in person, for a year or a "
         "date range (default: this year). Public holidays are in 'holidays'. "

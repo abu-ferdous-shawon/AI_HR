@@ -169,6 +169,7 @@ def test_chat_provider_uses_site_model_and_encrypted_dotenv_key(two_sites, monke
     from app.core.llm import get_llm
     from app.core.llm import gemini
 
+    monkeypatch.setattr(sites.settings, "groq_fallback_model", "")
     monkeypatch.setenv("HR_AI_MASTER_KEY", Fernet.generate_key().decode())
     secret_store.clear_key_cache()
     try:

@@ -21,10 +21,10 @@ from app.auth.frappe_session import identify_user
 from app.frappe_client.client import FrappeError, enforce_user_login, get_frappe_client
 from app.core.llm.base import ImageData, LLMBusy, LLMError, Message
 from app.core.answer_text import strip_source_references
-from app.core.masking import Vault
+from app.core.masking import TOKEN_RE, Vault
 from app.core import audit, gateway, sites
 from app.core.hardening import OriginGuard, assert_safe_config, docs_settings, parse_origins
-from app.core.reports import get_report
+from app.core.reports import get_report, require_export_permission
 from app.auth.credentials import Credentials, extract_credentials, use_credentials
 from app.auth.security import AccessDenied, UserContext, build_context, has_role, resolve_context
 from app.core.media import get_picture
@@ -200,6 +200,12 @@ def _is_dev(ctx: UserContext) -> bool:
     return ctx.user_id.startswith("dev:")
 
 
+def _uses_user_session(ctx: UserContext) -> bool:
+    return not _is_dev(ctx) and (
+        settings.frappe_auth_mode == "user_session" or ctx.employee_id is None
+    )
+
+
 # ---------- conversation memory (in the server's RAM) ----------
 
 MAX_CONVERSATIONS = 500   # oldest are dropped beyond this
@@ -212,6 +218,12 @@ def trim(messages: list[Message]) -> list[Message]:
     """Keep the last few questions, cutting only between whole turns."""
     starts = [i for i, m in enumerate(messages) if m.role == "user"]
     return messages[starts[-KEEP_USER_TURNS]:] if len(starts) > KEEP_USER_TURNS else messages
+
+
+def _signed_in_history(messages: list[Message]) -> list[Message]:
+    """Keep question context without carrying Frappe results or their vault into another turn."""
+    return [Message("user", TOKEN_RE.sub("[redacted]", message.text))
+            for message in messages if message.role == "user"][-KEEP_USER_TURNS:]
 
 
 # ---------- the web page ----------
@@ -447,8 +459,8 @@ def chat(request: Request, body: ChatRequest, ctx: UserContext = Depends(current
     started = time.monotonic()
     cid = body.conversation_id or uuid.uuid4().hex
     trace = TurnTrace()
-    if (settings.frappe_auth_mode == "user_session" and not _is_dev(ctx)
-            and creds is None):      # a real login we cannot forward: refuse, never downgrade
+    uses_user_session = _uses_user_session(ctx)
+    if uses_user_session and creds is None:
         _auth_audit(request, gateway.client_ip(request), 401, "no_usable_credentials")
         raise HTTPException(status_code=401, detail="Your sign-in is not valid.")
     wait = gateway.chat_limiter.hit(ctx.user_id)
@@ -462,9 +474,10 @@ def chat(request: Request, body: ChatRequest, ctx: UserContext = Depends(current
         _audit_chat(request, ctx, cid, body, len(body.images),
                     f"rejected_{exc.status_code}", started, trace)
         raise
-    own_login = creds if settings.frappe_auth_mode == "user_session" and not _is_dev(ctx) else None
+    own_login = creds if uses_user_session else None
     reply = " ".join(body.message.casefold().strip().rstrip(".!").replace(",", " ").split())
-    if own_login and body.conversation_id and not images and reply in _PROPOSAL_REPLIES:
+    if (own_login and settings.frappe_auth_mode == "user_session" and body.conversation_id
+            and not images and reply in _PROPOSAL_REPLIES):
         pending = confirmations.pending_card(bind(ctx, cid, own_login))
         if pending is not None:
             card = MutationCard(**pending)
@@ -481,6 +494,8 @@ def chat(request: Request, body: ChatRequest, ctx: UserContext = Depends(current
     with _lock:
         saved = _store.get(key)
     history, vault = (list(saved[0]), saved[1]) if saved else ([], None)
+    if own_login:
+        history, vault = _signed_in_history(history), None
     try:
         with use_credentials(own_login), capture_turn(trace):
             result = run_agent(body.message, ctx, history=history, vault=vault, images=images)
@@ -498,7 +513,10 @@ def chat(request: Request, body: ChatRequest, ctx: UserContext = Depends(current
         _audit_chat(request, ctx, cid, body, len(images), "internal_error", started, trace)
         raise
     with _lock:
-        _store[key] = (trim(result.messages), result.vault)
+        if own_login:
+            _store[key] = (_signed_in_history(result.messages), Vault())
+        else:
+            _store[key] = (trim(result.messages), result.vault)
         _store.move_to_end(key)
         while len(_store) > MAX_CONVERSATIONS:
             _store.popitem(last=False)
@@ -544,12 +562,25 @@ def confirm_change(body: MutationDecision, ctx: UserContext = Depends(current_us
 @app.get("/reports/{report_id}")
 def download_report(request: Request,
                     report_id: str = PathParam(pattern=r"^[0-9a-f]{32}$"),
-                    ctx: UserContext = Depends(current_user)):
+                    ctx: UserContext = Depends(current_user),
+                    creds: Credentials | None = Depends(request_credentials)):
     stored = get_report(report_id, ctx.user_id)  # only the person who asked gets it
-    _audit_download(request, ctx, "report", stored is not None)  # only the person who asked gets it
     if stored is None:
+        _audit_download(request, ctx, "report", False)
         raise HTTPException(status_code=404, detail="This report is no longer available.")
-    return FileResponse(stored.path, filename=stored.name)
+    if not creds or _is_dev(ctx):
+        raise HTTPException(status_code=403, detail="A signed-in Frappe session is required to download reports.")
+    try:
+        with use_credentials(creds):
+            require_export_permission(stored.permission_doctype)
+    except AccessDenied as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from None
+    except FrappeError as exc:
+        if exc.status_code in (401, 403) or exc.error_type == "PermissionError":
+            raise HTTPException(status_code=403, detail="Frappe denied access to this export.") from None
+        raise HTTPException(status_code=503, detail="Could not verify the report permissions with Frappe.") from None
+    _audit_download(request, ctx, "report", True)
+    return FileResponse(stored.path, filename=stored.name, headers={"Cache-Control": "private, no-store"})
 
 @app.get("/pictures/{picture_id}")
 def show_picture(request: Request,

@@ -46,6 +46,7 @@ def clean_rows(rows: list) -> list:
 
 @tool(
     name="get_my_profile",
+    requires_employee=True,
     description=(
         "Get the logged-in person's own complete profile: work details, "
         "personal and contact details, address, emergency contact, education "

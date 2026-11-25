@@ -19,6 +19,7 @@ def _parse_date(value: str, label: str) -> datetime.date:
 
 @tool(
     name="get_attendance",
+    requires_employee=True,
     description=(
         "Get attendance records (Present, Absent, On Leave, Half Day, Work From "
         "Home) for a date range, with counts per status. By default it covers "

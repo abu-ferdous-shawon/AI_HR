@@ -4,8 +4,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
-from app.agent.retriever import ReadContext, require_read_context, schema_view, self_filters
-from app.auth.security import AccessDenied, ToolInputError, UserContext
+from app.agent.retriever import ReadContext, require_read_context, schema_view
+from app.auth.security import ToolInputError, UserContext
 from app.core.masking import is_confidential
 from app.frappe_client.client import ORDER_FIELD
 from app.indexer.alias_resolver import normalize
@@ -120,16 +120,11 @@ def query_records(ctx: UserContext, args: RecordQuery) -> dict:
     context = require_read_context(ctx)
     schema = _schema(context, args.doctype)
     _fields(schema, args.fields)
-    guard = self_filters(args.doctype, ctx)
-    filters = guard + _filters(schema, args.filters)
-    or_filters = _filters(schema, args.or_filters)
-    projection = list(dict.fromkeys([*args.fields, *(field for field, _, _ in guard)]))
     rows = context.client.get_list(
-        args.doctype, projection, filters=filters, or_filters=or_filters,
+        args.doctype, args.fields, filters=_filters(schema, args.filters),
+        or_filters=_filters(schema, args.or_filters),
         order_by=_order(schema, args.order_by), limit=args.limit + 1, start=args.start,
     )
-    if any(row.get(field) != value for field, _, value in guard for row in rows):
-        raise AccessDenied("Frappe did not return a verifiable employee scope.")
     projected = [{key: row[key] for key in args.fields if key in row} for row in rows[:args.limit]]
     more = len(rows) > args.limit
     next_start = args.start + args.limit
@@ -144,21 +139,10 @@ def get_record_detail(ctx: UserContext, args: Detail) -> dict:
     schema = _schema(context, args.doctype, listable=False)
     if args.name in {".", ".."} or (schema["issingle"] and args.name != args.doctype):
         raise ToolInputError("Use the exact record ID or the single DocType name.")
-    guard = self_filters(args.doctype, ctx)
-    if guard and guard[0][0] == "name" and args.name != ctx.employee_id:
-        raise AccessDenied("This chat tool is limited to your own record.")
-    if guard and guard[0][0] != "name":
-        permitted = context.client.get_list(
-            args.doctype, ["name"], filters=[*guard, ["name", "=", args.name]], limit=1,
-        )
-        if not permitted:
-            raise AccessDenied("This chat tool is limited to your own record.")
     doc = context.client.get_doc(args.doctype, args.name)
     if not doc:
         raise ToolInputError("Frappe returned no record for that ID.")
-    if any(doc.get(field) != value for field, _, value in guard):
-        raise AccessDenied("This chat tool is limited to your own record.")
-    allowed = {field["fieldname"] for field in schema["fields"]}
+    allowed = set(schema["detail_fields"])
     result = {key: value for key, value in doc.items() if key in allowed}
     if schema["child_tables"]:
         for table, child_type in schema["child_tables"].items():
@@ -180,7 +164,7 @@ def aggregate_records(ctx: UserContext, args: Aggregate) -> dict:
         raise ToolInputError("Sum and average require a numeric field.")
     rows = context.client.get_aggregate(
         args.doctype, args.aggregate_fn, args.aggregate_field, group_by=args.group_by,
-        filters=self_filters(args.doctype, ctx) + _filters(schema, args.filters), limit=MAX_ROWS + 1,
+        filters=_filters(schema, args.filters), limit=MAX_ROWS + 1,
     )
     # Keep sensitive aggregates under the source field name so the masking vault handles them.
     key = "count" if args.aggregate_fn == "count" else args.aggregate_field
@@ -211,11 +195,6 @@ def run_frappe_report(ctx: UserContext, args: Report) -> dict:
     if any(key not in fields or current_policy().blocked(key) for key in args.filters):
         raise ToolInputError("Use only the available report filters.")
     filters = dict(args.filters)
-    ownership = self_filters(report["ref_doctype"], ctx)
-    if ownership:
-        if "employee" not in fields:
-            raise AccessDenied("This report does not support the required employee scope.")
-        filters["employee"] = ctx.employee_id
     if any(field["reqd"] and (field["fieldname"] not in filters or filters[field["fieldname"]] in (None, ""))
            for field in fields.values()):
         raise ToolInputError("Fill in the required report filters shown in the report definition.")
@@ -226,8 +205,6 @@ def run_frappe_report(ctx: UserContext, args: Report) -> dict:
     if not isinstance(output, dict) or not isinstance(output.get("result"), list):
         raise ToolInputError("Frappe did not return a readable report result.")
     rows = output["result"]
-    if ownership and any(not isinstance(row, dict) or row.get("employee") != ctx.employee_id for row in rows):
-        raise AccessDenied("Frappe did not return a verifiable employee scope for this report.")
     # Give the masking vault named cells. Positional rows need trusted labels first.
     raw_columns = output.get("columns") or []
     columns = [column if isinstance(column, str) else column.get("fieldname", "") for column in raw_columns]

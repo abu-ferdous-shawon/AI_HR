@@ -1,16 +1,53 @@
+from contextlib import nullcontext
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import requests
 
 from app.core import sites
-from app.frappe_client.client import FrappeError
-from app.frappe_client.service_purpose import active_purpose
+from app.frappe_client.client import FrappeClient, FrappeError
+from app.frappe_client.service_purpose import active_purpose, service_purpose
 from app.indexer import sync
 from app.indexer.cards import TIERS
 from app.indexer.embeddings import GeminiEmbeddings
 from app.indexer.vector_store import read_json, read_tier
+
+
+@pytest.mark.parametrize(("indexing", "outcomes", "expected_status", "delays"), [
+    (True, [requests.ConnectionError(), requests.ReadTimeout(), 200], 200, [1, 2]),
+    (True, [requests.ConnectionError()] * 3, 0, [1, 2]),
+    (True, [403], 403, []),
+    (False, [requests.ConnectionError()], 0, []),
+])
+def test_frappe_connection_retries_are_bounded_and_indexing_only(
+    monkeypatch, indexing, outcomes, expected_status, delays,
+):
+    client = FrappeClient("https://frappe.example", "test-key", "test-secret")
+    pending = iter(outcomes)
+    slept = []
+
+    def get(*args, **kwargs):
+        outcome = next(pending)
+        if isinstance(outcome, Exception):
+            raise outcome
+        response = requests.Response()
+        response.status_code = outcome
+        response._content = b'{"data": [{"name": "Employee"}]}'
+        return response
+
+    monkeypatch.setattr(client.session, "get", get)
+    monkeypatch.setattr("app.frappe_client.client.time.sleep", slept.append)
+    with service_purpose("indexing") if indexing else nullcontext():
+        if expected_status == 200:
+            assert client.get_list("DocType") == [{"name": "Employee"}]
+        else:
+            with pytest.raises(FrappeError) as caught:
+                client.get_list("DocType")
+            assert caught.value.status_code == expected_status
+    assert slept == delays
+    assert list(pending) == []
 
 
 def field(name, kind="Data", **properties):

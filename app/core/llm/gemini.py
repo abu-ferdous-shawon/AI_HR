@@ -2,6 +2,8 @@ import logging
 import re
 import time
 
+import httpx
+import httpx2
 from google import genai
 from google.genai import types
 
@@ -27,12 +29,16 @@ def _retry_delay(exc: Exception) -> float | None:
 
 
 class GeminiProvider(LLMProvider):
-    def __init__(self, api_key: str | None = None, model: str | None = None):
+    def __init__(self, api_key: str | None = None, model: str | None = None, *,
+                 fail_fast: bool = False):
         key = settings.gemini_api_key.get_secret_value() if api_key is None else api_key
         if not key:
             raise LLMError("GEMINI_API_KEY is empty. Add it to your .env file.")
         self.model = model or settings.gemini_model
-        self.client = genai.Client(api_key=key)
+        self.fail_fast = fail_fast
+        options = types.HttpOptions(timeout=10_000, retry_options=types.HttpRetryOptions(
+            attempts=1)) if fail_fast else None
+        self.client = genai.Client(api_key=key, http_options=options)
 
     # ---- our format -> Gemini format ----
 
@@ -62,8 +68,10 @@ class GeminiProvider(LLMProvider):
             elif m.raw is not None:
                 contents.append(m.raw)  # replay Gemini's own reply unchanged
             else:
-                contents.append(types.Content(
-                    role="model", parts=[types.Part(text=m.text)]))
+                parts = [types.Part(text=m.text)] if m.text else []
+                parts.extend(types.Part.from_function_call(name=call.name, args=call.args)
+                             for call in m.tool_calls)
+                contents.append(types.Content(role="model", parts=parts or [types.Part(text="")]))
         flush()
         return contents
 
@@ -97,6 +105,12 @@ class GeminiProvider(LLMProvider):
                 break
             except Exception as exc:
                 delay = _retry_delay(exc)
+                if self.fail_fast:
+                    code = getattr(exc, "code", None)
+                    transient = isinstance(exc, (httpx.TransportError, httpx2.TransportError))
+                    if delay is not None or code in (500, 502, 503, 504) or transient:
+                        raise LLMBusy("Gemini is temporarily unavailable", retry_after=delay or 10.0) from None
+                    raise LLMError(f"Gemini request failed ({self.model})") from None
                 if delay is None:                      # not a rate limit: do not retry
                     raise LLMError(f"Gemini request failed ({self.model}): {exc}") from exc
                 pause = delay + 1

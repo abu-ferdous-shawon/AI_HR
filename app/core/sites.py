@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import yaml
 from dotenv import dotenv_values
 from pydantic import (
-    BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator,
+    BaseModel, ConfigDict, Field, SecretStr, ValidationError, field_validator, model_validator,
 )
 
 from app.config import settings
@@ -40,6 +40,8 @@ class SiteConfig(BaseModel):
     llm_provider: str
     llm_model: str
     gemini_api_key: SecretStr = Field(default=SecretStr(""), exclude=True)
+    groq_api_key: SecretStr = Field(default=SecretStr(""), exclude=True)
+    groq_fallback_model: str = ""
     embedding_provider: str
     embedding_model: str
     knowledge_packs: list[str] = Field(default_factory=list)
@@ -47,6 +49,12 @@ class SiteConfig(BaseModel):
     index_include_doctypes: list[str] = Field(default_factory=list)
     index_exclude_doctypes: list[str] = Field(default_factory=list)
     write_doctypes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _fallback_credentials(self):
+        if self.groq_fallback_model.strip() and not self.groq_api_key.get_secret_value().strip():
+            raise ValueError("Configure GROQ_API_KEY or the site's groq_api_key_env to enable GroqCloud")
+        return self
 
     @field_validator("write_doctypes")
     @classmethod
@@ -115,6 +123,8 @@ def _global_defaults() -> dict:
         "llm_provider": settings.llm_provider,
         "llm_model": settings.llm_model or settings.gemini_model,
         "gemini_api_key": settings.gemini_api_key,
+        "groq_api_key": settings.groq_api_key,
+        "groq_fallback_model": settings.groq_fallback_model,
         "embedding_provider": settings.embedding_provider,
         "embedding_model": settings.embedding_model,
         "knowledge_packs": [p.strip() for p in settings.knowledge_packs.split(",") if p.strip()],
@@ -166,10 +176,11 @@ def _from_file(path: Path) -> tuple[dict[str, SiteConfig], str]:
             raise SiteConfigError("Each site must have a string name and a settings mapping")
         raw = dict(raw)
         secrets = {key: _secret(name, raw, key, env_file) for key in ("api_key", "api_secret")}
-        if {"api_key", "api_secret", "gemini_api_key"} & raw.keys():
+        if {"api_key", "api_secret", "gemini_api_key", "groq_api_key"} & raw.keys():
             raise SiteConfigError(f"site '{name}': use environment variable references for secrets")
-        if "gemini_api_key_env" in raw:
-            secrets["gemini_api_key"] = _secret(name, raw, "gemini_api_key", env_file)
+        for key in ("gemini_api_key", "groq_api_key"):
+            if f"{key}_env" in raw:
+                secrets[key] = _secret(name, raw, key, env_file)
         try:
             sites[name] = SiteConfig(name=str(name), **{**_global_defaults(), **raw, **secrets})
         except ValidationError as exc:

@@ -2,7 +2,7 @@
 
 This backend connects a chat UI to Frappe v16, ERPNext, and HRMS. It can answer
 policy questions, query permitted records and reports, and propose changes to
-explicitly enabled DocTypes for user confirmation.
+supported DocTypes using the signed-in user's Frappe permissions.
 
 ## Local setup
 

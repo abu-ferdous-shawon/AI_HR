@@ -7,7 +7,11 @@ class LLMError(Exception):
     """Raised when the AI service fails or is set up wrongly."""
 
 class LLMBusy(LLMError):
-    """The AI service is rate-limited right now; trying again shortly usually works."""
+    """The AI service is temporarily unavailable."""
+
+    def __init__(self, message: str = "", *, retry_after: float = 10.0):
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 @dataclass

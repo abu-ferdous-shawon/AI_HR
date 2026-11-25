@@ -64,6 +64,7 @@ def _find_file_path(ctx: UserContext, src: ImageSource):
 
 @tool(
     name="show_image",
+    requires_employee=True,
     description=(
         "Show a picture stored in the HR system to the person asking: their own "
         "employee photo (employee_photo), their own login profile picture "
